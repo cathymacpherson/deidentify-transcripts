@@ -1,0 +1,30 @@
+{
+  "transcript_id": "sample-json-transcript",
+  "turns": [
+    {
+      "speaker": "interviewer",
+      "text": "Could you confirm your name and where you study?"
+    },
+    {
+      "speaker": "participant",
+      "text": "My name is Maya Patel and I study at Cedar Grove University."
+    },
+    {
+      "speaker": "interviewer",
+      "text": "How can the clinic contact you?"
+    },
+    {
+      "speaker": "participant",
+      "text": "Please call Maya on 0415 246 810 or email maya.patel@example.org."
+    },
+    {
+      "speaker": "interviewer",
+      "text": "Is Dr Helen Brooks still your usual doctor?"
+    },
+    {
+      "speaker": "participant",
+      "text": "Yes, Dr Brooks sees me at Greenbank Medical Centre."
+    }
+  ]
+}
+
