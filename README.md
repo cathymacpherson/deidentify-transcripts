@@ -1,78 +1,31 @@
-# deidentify-transcripts
+# Transcript Deidentification
 
-Locally anonymise interview transcripts using:
+De-identify interview or therapy transcripts using:
 
 1. deterministic patterns for email addresses, URLs, phone numbers, dates and long ID numbers;
-2. a downloaded local language model for contextual identifiers such as names, schools,
+2. a project-approved language model for contextual identifiers such as names, schools,
    organisations, addresses and places;
 3. stable placeholders such as `[NAME_1]` and `[SCHOOL_1]`;
 4. an independent second model pass and a mandatory human-review queue.
 
-The transcript is sent only to Ollama on the same computer. It is not sent to a commercial cloud
-API.
+The default project setup sends transcript text to the approved institution-managed vLLM server.
+That server exposes an OpenAI-compatible API and is intended for project researchers. A fully local
+Ollama setup is also available for testing or offline use.
 
 > De-identification reduces risk; it does not prove that a transcript is anonymous. Validate this
 > workflow against representative, manually annotated transcripts and retain human review.
 
-## Recommended computer
+## What colleagues need
 
-- 16 GB RAM: use `qwen3:8b`.
-- 24-32 GB RAM: use `qwen3:8b` comfortably, or evaluate `gemma3:12b`.
-- 8 GB RAM: a 4B model may run, but is not recommended for sensitive production work.
+- access to the approved project server or institutional network/VPN;
+- a project-issued inference API key;
+- Python 3.11 or newer;
+- this repository;
+- approved encrypted storage for the input transcripts and `output/sensitive/` reports.
 
-A dedicated GPU is helpful but not required. CPU-only processing will be slower. Keep approximately
-15 GB of disk space free for Ollama, the model and working files.
+The default server-based setup does not require a local GPU or local LLM installation.
 
-## 1. Install Ollama and a model
-
-### Ubuntu
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-systemctl status ollama
-```
-
-If the service is not running:
-
-```bash
-sudo systemctl enable --now ollama
-```
-
-### Windows or macOS
-
-Install Ollama from <https://ollama.com/download>.
-
-### Download a model
-
-For a computer with 16 GB RAM:
-
-```bash
-ollama pull qwen3:8b
-```
-
-For a computer with approximately 24-32 GB RAM:
-
-```bash
-ollama pull gemma3:12b
-```
-
-Do not select an Ollama model whose name ends in `-cloud`.
-
-Confirm that Ollama is available:
-
-```bash
-curl http://localhost:11434/v1/models
-```
-
-In Windows PowerShell, use:
-
-```powershell
-Invoke-RestMethod http://localhost:11434/v1/models
-```
-
-Ollama should listen only on `localhost:11434`.
-
-## 2. Install this application
+## 1. Install this application
 
 ### Ubuntu, macOS or Linux
 
@@ -81,7 +34,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-cp .env.example .env
 ```
 
 On Ubuntu, if virtual-environment support is missing:
@@ -98,8 +50,39 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-Copy-Item .env.example .env
 ```
+
+## 2. Configure the project server
+
+Create the project configuration file:
+
+```bash
+deidentify-transcripts init-config
+```
+
+This writes `.env` with the approved server settings:
+
+```env
+DEID_ALLOW_REMOTE_LLM=true
+VLLM_BASE_URL=http://10.204.35.227:4200/v1
+VLLM_MODEL=large
+VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key
+VLLM_OUTPUT_MODE=native
+```
+
+Open `.env` and replace `replace-with-issued-key` with your issued API key.
+
+Notes:
+
+- `DEID_ALLOW_REMOTE_LLM=true` confirms that this project is intentionally sending transcript text
+  to the approved institutional server.
+- `VLLM_BASE_URL` is the server URL.
+- `VLLM_MODEL=large` must match the model name exposed by the server.
+- `VLLM_INFERENCE_HUB_API_KEY` should be the key issued to the researcher. Do not commit it.
+- `.env` is gitignored.
+- If `.env` already exists, `init-config` will stop rather than overwrite it. Use
+  `deidentify-transcripts init-config --force` only if you intentionally want to replace the
+  existing file.
 
 Check the configuration and model connection:
 
@@ -110,26 +93,63 @@ deidentify-transcripts doctor
 Expected output resembles:
 
 ```text
-OK: local endpoint http://localhost:11434/v1; model qwen3:8b
+OK: remote vllm endpoint http://10.204.35.227:4200/v1; model large
 ```
 
-## 3. Select or switch models
+If `doctor` fails:
 
-The selected model is configured in `.env`:
+- confirm you are connected to the institutional network/VPN;
+- confirm the API key was copied correctly;
+- confirm the server URL and model name with the project maintainer;
+- do not continue with real transcripts until `doctor` succeeds.
+
+## 3. Optional local-only fallback
+
+Use this only for testing/offline work. Local quality and speed depend on the machine and model.
+
+Recommended local models:
+
+- 16 GB RAM: `qwen3:8b`.
+- 24-32 GB RAM: `qwen3:8b` comfortably, or evaluate `gemma3:12b`.
+- 8 GB RAM: a 4B model may run, but is not recommended for sensitive production work.
+
+Install Ollama from <https://ollama.com/download>, then download a model:
+
+```bash
+ollama pull qwen3:8b
+```
+
+For a larger local machine:
+
+```bash
+ollama pull gemma3:12b
+```
+
+Then create a local config:
+
+```bash
+deidentify-transcripts init-config --local
+```
+
+If `.env` already exists and you intentionally want to replace it:
+
+```bash
+deidentify-transcripts init-config --local --force
+```
+
+The local config contains:
 
 ```env
+DEID_ALLOW_REMOTE_LLM=false
+OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen3:8b
+OLLAMA_API_KEY=ollama
 ```
 
-To use Gemma instead:
+Do not select an Ollama model whose name ends in `-cloud`. Ollama should listen only on
+`localhost:11434`.
 
-```env
-OLLAMA_MODEL=gemma3:12b
-```
-
-Changing `.env` affects the next run; no code change is required.
-
-Useful checks:
+Useful local checks:
 
 ```bash
 ollama list
@@ -240,6 +260,8 @@ deidentify-transcripts run examples/complex-synthetic-transcript.txt \
 
 ## 5. Run de-identification
 
+Run a small example first:
+
 Ubuntu, macOS or Linux:
 
 ```bash
@@ -258,6 +280,9 @@ Optional arguments:
 deidentify-transcripts run transcript.txt --id participant-001 --output-dir output
 ```
 
+For a real transcript, replace `transcript.txt` with the approved local path to the transcript file.
+Use `--id` to assign the participant/study identifier you want in the output filenames.
+
 Outputs:
 
 ```text
@@ -268,8 +293,11 @@ output/
 ```
 
 - `anonymised/` contains the speaker and anonymised text, but no raw transcript field.
-- `sensitive/` contains original identifiers and must remain in approved encrypted storage.
-- An exit code of `2` means human review is required.
+- `sensitive/` contains original identifiers and must remain in approved encrypted storage. Each
+  de-identification report also records the selected model, the Ollama digest when available, the
+  pipeline version and the UTC run-start time.
+- An exit code of `2` means the run completed but human review is required. This is common and does
+  not mean the software crashed.
 - Running the same transcript ID again overwrites that ID's previous output files. Use another
   `--output-dir` or copy the previous files when comparing models.
 
@@ -287,23 +315,18 @@ Always inspect:
 2. `sensitive/<id>.review-queue.jsonl`;
 3. replacements that remove clinically meaningful non-identifying text.
 
-The detector processes each turn using the local model. It then deterministically propagates
+The detector processes each turn using the configured model. It then deterministically propagates
 identifiers already found elsewhere in the transcript, so repeated names receive the same token. A
-second local-model pass checks the redacted text for remaining identifiers.
+second model pass checks the redacted text for remaining identifiers.
 
 The review queue may contain genuine misses as well as conservative false alarms. Both require a
 human decision. The automated status `clean` means only that the configured checks found no
 unresolved items; it is not a certification of anonymity.
 
-## 7. Ubuntu notes
+## 7. Platform notes
 
 - Paths use `/`, for example `examples/sample-transcript.txt`.
 - Activate the environment with `source .venv/bin/activate`.
-- Ollama normally runs as a `systemd` service.
-- A supported NVIDIA GPU may be used automatically when the appropriate driver is installed. Check
-  with `nvidia-smi`.
-- Inspect memory and processor information with `free -h` and `lscpu`.
-- Keep Ollama on localhost. Do not configure `OLLAMA_HOST=0.0.0.0` for sensitive transcripts.
 - Restrict local output permissions where appropriate:
 
 ```bash
@@ -311,11 +334,23 @@ chmod 700 output output/sensitive
 chmod 600 .env output/sensitive/*
 ```
 
+For Windows PowerShell, use backslashes in paths, for example
+`examples\sample-transcript.txt`. If script activation is blocked, run PowerShell as your normal
+user and check your execution policy with your local IT support.
+
+For local-only Ollama use on Ubuntu, Ollama normally runs as a `systemd` service. A supported NVIDIA
+GPU may be used automatically when the appropriate driver is installed; check with `nvidia-smi`.
+Keep Ollama on localhost. Do not configure `OLLAMA_HOST=0.0.0.0` for sensitive transcripts.
+
 ## Privacy checklist
 
 - Obtain ethics, governance and information-security approval for the project.
 - Use an institution-managed computer and approved encrypted storage.
-- Keep Ollama bound to `localhost`; do not expose port `11434` publicly.
+- Use the project server only from approved accounts and networks.
+- Keep API keys in `.env` only; do not paste them into notebooks, scripts, chat, email, commits or
+  screenshots.
+- If using local Ollama, keep it bound to `localhost`; do not expose port `11434` publicly.
+- Use `DEID_ALLOW_REMOTE_LLM=true` only for approved institution-managed endpoints.
 - Do not use cloud-hosted Ollama models.
 - Do not commit transcripts, reports, `.env`, `data/`, or `output/`.
 - Check institutional backup, antivirus and device-sync policies.

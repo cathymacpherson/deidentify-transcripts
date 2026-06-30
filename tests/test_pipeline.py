@@ -1,5 +1,5 @@
 from deidentify_transcripts.pipeline import deidentify
-from deidentify_transcripts.schemas import PiiSpan, Transcript, Turn
+from deidentify_transcripts.schemas import PiiSpan, RunMetadata, Transcript, Turn
 
 
 def test_pipeline_uses_stable_tokens_and_reports_clean():
@@ -39,6 +39,28 @@ def test_pipeline_uses_stable_tokens_and_reports_clean():
     assert output.turns[1].anonymised_text == "Did [NAME_1] enjoy it?"
     assert report.status == "clean"
     assert report.registry["alex"] == "[NAME_1]"
+
+
+def test_pipeline_includes_supplied_run_metadata():
+    transcript = Transcript(
+        transcript_id="t1",
+        turns=[Turn(turn_id=0, speaker="participant", text="No identifiers here.")],
+    )
+    metadata = RunMetadata(
+        model="gemma4:12b",
+        model_digest="abc123",
+        pipeline_version="0.1.0",
+        started_at_utc="2026-06-26T00:00:00Z",
+    )
+
+    _, report = deidentify(
+        transcript,
+        detect_fn=lambda turn_id, text: [],
+        residual_fn=lambda turn_id, text: [],
+        run_metadata=metadata,
+    )
+
+    assert report.run_metadata == metadata
 
 
 def test_pipeline_propagates_identifier_missed_in_a_later_turn():

@@ -51,6 +51,9 @@ def test_common_descriptive_phrases_are_not_identifiers():
         "your name",
         "where you study",
         "who is your doctor",
+        "teacher",
+        "front age",
+        "another department",
     ]:
         assert is_bare_generic_identifier(text)
 

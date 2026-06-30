@@ -1,23 +1,55 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import httpx
 import typer
 
-from .config import Settings
+from .config import Settings, env_template
 from .detect import make_detector
 from .gate import make_residual_detector
 from .io import load_transcript, save_outputs
 from .model import LocalModel
 from .pipeline import deidentify
+from .schemas import RunMetadata
 
 app = typer.Typer(no_args_is_help=True)
 
 
+def _pipeline_version() -> str:
+    try:
+        return version("deidentify-transcripts")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+@app.command("init-config")
+def init_config(
+    output_path: Path = typer.Option(Path(".env"), "--output", "-o", help="Where to write the env file"),
+    local: bool = typer.Option(False, "--local", help="Write a local Ollama configuration instead"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing env file"),
+) -> None:
+    """Create a ready-to-edit .env file."""
+    if output_path.exists() and not force:
+        typer.echo(
+            f"FAILED: {output_path} already exists. Use --force to replace it.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    output_path.write_text(env_template(local=local), encoding="utf-8")
+    if local:
+        typer.echo(f"Wrote local Ollama config to {output_path}")
+        typer.echo("Next: install Ollama, pull the configured model, then run deidentify-transcripts doctor")
+    else:
+        typer.echo(f"Wrote project-server config to {output_path}")
+        typer.echo("Next: replace VLLM_INFERENCE_HUB_API_KEY with your issued key, then run deidentify-transcripts doctor")
+
+
 @app.command()
 def doctor() -> None:
-    """Check local-only configuration, Ollama connectivity and the selected model."""
+    """Check LLM endpoint connectivity and the selected model."""
     try:
         settings = Settings.from_env()
         model = LocalModel(settings)
@@ -32,7 +64,10 @@ def doctor() -> None:
             err=True,
         )
         raise typer.Exit(code=1)
-    typer.echo(f"OK: local endpoint {settings.base_url}; model {settings.model}")
+    location = "remote" if settings.allow_remote else "local"
+    typer.echo(
+        f"OK: {location} {settings.provider} endpoint {settings.base_url}; model {settings.model}"
+    )
 
 
 @app.command()
@@ -41,19 +76,26 @@ def run(
     transcript_id: str | None = typer.Option(None, "--id", help="Override the transcript identifier"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir"),
 ) -> None:
-    """De-identify a plain-text or JSON transcript using a downloaded local model."""
+    """De-identify a plain-text or JSON transcript using the configured LLM endpoint."""
     try:
         settings = Settings.from_env()
         local_model = LocalModel(settings)
         transcript = load_transcript(input_path, transcript_id)
         if not transcript.turns:
             raise ValueError("the input transcript contains no non-empty turns")
+        run_metadata = RunMetadata(
+            model=settings.model,
+            model_digest=local_model.model_digest(),
+            pipeline_version=_pipeline_version(),
+            started_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
 
         output, report = deidentify(
             transcript,
             detect_fn=make_detector(local_model.structured),
             residual_fn=make_residual_detector(local_model.structured),
             low_confidence_threshold=settings.low_confidence_threshold,
+            run_metadata=run_metadata,
         )
         anonymised_path, report_path, queue_path = save_outputs(output, report, output_dir)
     except (ValueError, RuntimeError, httpx.HTTPError, KeyError) as exc:
@@ -73,4 +115,3 @@ def run(
 
 if __name__ == "__main__":
     app()
-

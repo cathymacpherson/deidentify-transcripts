@@ -68,10 +68,17 @@ class ReviewItem(BaseModel):
     confidence: float = 1.0
 
 
+class RunMetadata(BaseModel):
+    model: str
+    model_digest: str | None = None
+    pipeline_version: str
+    started_at_utc: str
+
+
 class DeidReport(BaseModel):
     transcript_id: str
+    run_metadata: RunMetadata | None = None
     spans: list[PiiSpan] = Field(default_factory=list)
     registry: dict[str, str] = Field(default_factory=dict)
     review_items: list[ReviewItem] = Field(default_factory=list)
     status: Literal["clean", "needs_review"] = "clean"
-

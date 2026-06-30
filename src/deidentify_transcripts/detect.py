@@ -32,6 +32,16 @@ _BARE_GENERIC_PII: dict[str, set[str]] = {
     "place": {"home", "house", "store", "shop", "factory"},
 }
 _BARE_GENERIC_TEXT = set().union(*_BARE_GENERIC_PII.values())
+_COMMON_NON_IDENTIFIER_WORDS = {
+    # Common transcript/therapy words and generic roles. These are rejected only when an entire
+    # candidate is made from common words, so "Oak Park School" and "Sarah's sister" are retained.
+    "a", "age", "an", "another", "any", "back", "bottom", "case", "centre", "center", "class",
+    "client", "college", "company", "counselor", "counsellor", "department", "doctor", "edge",
+    "family", "front", "gp", "group", "home", "hospital", "house", "job", "middle", "office",
+    "organisation", "organization", "part", "place", "practice", "program", "programme",
+    "provider", "room", "school", "section", "service", "shop", "side", "store", "teacher",
+    "therapist", "top", "uni", "university", "ward", "work", "workplace",
+}
 _GENERIC_TITLES = {"sir", "madam", "ma'am", "mr", "mrs", "ms", "miss"}
 _NON_NAME_WORDS = {
     # Pronouns and determiners
@@ -116,6 +126,8 @@ def is_bare_generic_identifier(text: str, pii_type: PiiType | None = None) -> bo
     # Pronoun/determiner phrases such as "my husband", "the kids", "at home", and
     # "your home" remain generic. A named relation such as "Sarah's sister" is retained.
     if reduced in _BARE_GENERIC_TEXT or reduced in _GENERIC_TITLES:
+        return True
+    if reduced and all(word in _COMMON_NON_IDENTIFIER_WORDS for word in reduced.split()):
         return True
     if pii_type is None:
         return False
