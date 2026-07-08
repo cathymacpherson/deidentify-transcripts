@@ -15,9 +15,10 @@ Ollama setup is also available for testing or offline use.
 > De-identification reduces risk; it does not prove that a transcript is anonymous. Validate this
 > workflow against representative, manually annotated transcripts and retain human review.
 
-## What colleagues need
+## What you'll need
 
-- access to the approved project server or institutional network/VPN;
+- Tailscale installed and connected, so your computer can reach the project server (instructions
+  below);
 - a project-issued inference API key;
 - Python 3.11 or newer;
 - this repository;
@@ -25,7 +26,64 @@ Ollama setup is also available for testing or offline use.
 
 The default server-based setup does not require a local GPU or local LLM installation.
 
-## 1. Install this application
+## 1. Connect to the server with Tailscale
+
+The project server lives on an institutional machine that isn't reachable over the open internet.
+[Tailscale](https://tailscale.com) creates a private, secure network ("tailnet") between your
+computer and that machine, so you can reach the server without a full VPN client. You only need to
+set this up once.
+
+Ask the project maintainer for a Tailscale auth key. Treat it like a password: don't share it,
+paste it into chat/email, or commit it anywhere.
+
+### Windows
+
+1. Download and install Tailscale from <https://tailscale.com/download/windows>.
+2. Open PowerShell and run:
+
+   ```powershell
+   & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=paste-your-auth-key-here
+   ```
+
+3. The Tailscale icon should appear in your system tray, showing you're connected.
+
+### macOS
+
+1. Download and install Tailscale from <https://tailscale.com/download/mac> (or via the Mac App
+   Store).
+2. Open Terminal and run:
+
+   ```bash
+   sudo tailscale up --authkey=paste-your-auth-key-here
+   ```
+
+3. The Tailscale icon should appear in your menu bar, showing you're connected.
+
+### Ubuntu or other Linux
+
+1. Install Tailscale:
+
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   ```
+
+2. Connect using your auth key:
+
+   ```bash
+   sudo tailscale up --authkey=paste-your-auth-key-here
+   ```
+
+### Check the connection
+
+Run `tailscale status` on any platform. You should see your own machine listed as `Connected`,
+along with the project server. Once this shows a connection, continue to the next step — the
+`doctor` command later in this guide gives a second confirmation that everything can talk to the
+server.
+
+If `tailscale up` fails or the auth key is rejected, the key may have expired; ask the project
+maintainer for a new one.
+
+## 2. Install this application
 
 ### Ubuntu, macOS or Linux
 
@@ -52,7 +110,7 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-## 2. Configure the project server
+## 3. Configure the project server
 
 Create the project configuration file:
 
@@ -98,12 +156,12 @@ OK: remote vllm endpoint http://10.204.35.227:4200/v1; model large
 
 If `doctor` fails:
 
-- confirm you are connected to the institutional network/VPN;
+- confirm Tailscale is connected (`tailscale status` should show you as `Connected`);
 - confirm the API key was copied correctly;
 - confirm the server URL and model name with the project maintainer;
 - do not continue with real transcripts until `doctor` succeeds.
 
-## 3. Optional local-only fallback
+## 4. Optional local-only fallback
 
 Use this only for testing/offline work. Local quality and speed depend on the machine and model.
 
@@ -161,7 +219,7 @@ ollama ps
 - `doctor` shows which model this application will request.
 - `ollama ps` shows the model currently loaded in memory.
 
-## 4. Prepare a transcript
+## 5. Prepare a transcript
 
 The application accepts plain-text and JSON transcripts.
 
@@ -258,7 +316,7 @@ deidentify-transcripts run examples/complex-synthetic-transcript.txt \
   --output-dir output/complex-gemma
 ```
 
-## 5. Run de-identification
+## 6. Run de-identification
 
 Run a small example first:
 
@@ -307,7 +365,7 @@ Example anonymised text:
 [NAME_1] attended [SCHOOL_1]. Call [PHONE_1].
 ```
 
-## 6. Review the results
+## 7. Review the results
 
 Always inspect:
 
@@ -323,7 +381,7 @@ The review queue may contain genuine misses as well as conservative false alarms
 human decision. The automated status `clean` means only that the configured checks found no
 unresolved items; it is not a certification of anonymity.
 
-## 7. Platform notes
+## 8. Platform notes
 
 - Paths use `/`, for example `examples/sample-transcript.txt`.
 - Activate the environment with `source .venv/bin/activate`.
@@ -347,8 +405,8 @@ Keep Ollama on localhost. Do not configure `OLLAMA_HOST=0.0.0.0` for sensitive t
 - Obtain ethics, governance and information-security approval for the project.
 - Use an institution-managed computer and approved encrypted storage.
 - Use the project server only from approved accounts and networks.
-- Keep API keys in `.env` only; do not paste them into notebooks, scripts, chat, email, commits or
-  screenshots.
+- Keep API keys and your Tailscale auth key secret; do not paste them into notebooks, scripts,
+  chat, email, commits or screenshots.
 - If using local Ollama, keep it bound to `localhost`; do not expose port `11434` publicly.
 - Use `DEID_ALLOW_REMOTE_LLM=true` only for approved institution-managed endpoints.
 - Do not use cloud-hosted Ollama models.
