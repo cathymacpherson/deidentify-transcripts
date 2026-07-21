@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .schemas import PiiSpan, Transcript
 
 _PREFIX = {
@@ -10,6 +12,7 @@ _PREFIX = {
     "school": "SCHOOL",
     "place": "PLACE",
     "organisation": "ORG",
+    "occupation": "OCCUPATION",
     "address": "ADDRESS",
     "postcode": "POSTCODE",
     "date": "DATE",
@@ -17,6 +20,7 @@ _PREFIX = {
     "email": "EMAIL",
     "url": "URL",
     "id_number": "ID",
+    "social_media_handle": "HANDLE",
     "other": "PII",
 }
 
@@ -50,6 +54,25 @@ def redact(transcript: Transcript, spans: list[PiiSpan], registry: NameRegistry)
         text = turn.text
         for span in sorted(by_turn.get(turn.turn_id, []), key=lambda item: item.start, reverse=True):
             text = text[:span.start] + (span.token or registry.token_for(span)) + text[span.end:]
+        turn.anonymised_text = text
+    return transcript
+
+
+def sweep_registry(transcript: Transcript, registry: NameRegistry) -> Transcript:
+    """Redact exact residual occurrences of already-known PII surfaces across every turn.
+
+    Used to auto-correct a residual identifier confirmed by the gate: once it's registered with
+    a token, this closes the loop so the same surface is also masked anywhere else it appears,
+    not just in the turn the gate flagged it in.
+    """
+    surfaces = sorted(registry.mapping.items(), key=lambda item: len(item[0]), reverse=True)
+    for turn in transcript.turns:
+        text = turn.anonymised_text
+        for surface, token in surfaces:
+            if not surface:
+                continue
+            pattern = re.compile(rf"(?<![\w\[])({re.escape(surface)})(?![\w\]])", re.IGNORECASE)
+            text = pattern.sub(token, text)
         turn.anonymised_text = text
     return transcript
 

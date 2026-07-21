@@ -107,18 +107,62 @@ def test_pipeline_propagates_identifier_missed_in_a_later_turn():
     assert len([span for span in report.spans if span.text.lower() == "alex"]) == 2
 
 
-def test_pipeline_requires_review_for_residual_identifier():
+def test_pipeline_auto_corrects_a_confirmed_residual_identifier():
+    """A residual the gate independently confirms is genuinely present is auto-redacted rather
+    than left blocking human review — it's registered, swept into the text, and kept in
+    review_items with an updated reason so the correction is still auditable."""
     transcript = Transcript(
         transcript_id="t1",
         turns=[Turn(turn_id=0, speaker="participant", text="I saw Smith.")],
     )
-    _, report = deidentify(
+    output, report = deidentify(
         transcript,
         detect_fn=lambda turn_id, text: [],
         residual_fn=lambda turn_id, text: ["Smith"],
     )
-    assert report.status == "needs_review"
+    assert report.status == "clean"
+    assert output.turns[0].anonymised_text == "I saw [PII_1]."
     assert report.review_items[0].text == "Smith"
+    assert report.review_items[0].reason == "gate: auto-corrected"
+    assert report.registry["smith"] == "[PII_1]"
+
+
+def test_pipeline_still_requires_review_for_low_confidence_detection():
+    """Auto-correction only applies to gate-confirmed residuals — a genuinely low-confidence
+    stage-1 detection must still block as a review item, since it was never independently
+    confirmed the way a residual gate hit is."""
+    transcript = Transcript(
+        transcript_id="t1",
+        turns=[Turn(turn_id=0, speaker="participant", text="Maybe Alex was there.")],
+    )
+    span = PiiSpan(
+        turn_id=0, start=6, end=10, text="Alex", pii_type="person_name",
+        confidence=0.2, source="llm",
+    )
+    _, report = deidentify(
+        transcript,
+        detect_fn=lambda turn_id, text: [span],
+        residual_fn=lambda turn_id, text: [],
+        low_confidence_threshold=0.5,
+    )
+    assert report.status == "needs_review"
+    assert report.review_items[0].reason == "low-confidence detection"
+
+
+def test_pipeline_discards_residual_hit_not_present_in_the_turn():
+    """A residual detector can hallucinate text that isn't actually in the turn (e.g. echoing
+    something from its own instructions). Those hits must be discarded, not queued for review."""
+    transcript = Transcript(
+        transcript_id="t1",
+        turns=[Turn(turn_id=0, speaker="participant", text="Nothing sensitive here.")],
+    )
+    _, report = deidentify(
+        transcript,
+        detect_fn=lambda turn_id, text: [],
+        residual_fn=lambda turn_id, text: ["Someone Else Entirely"],
+    )
+    assert report.status == "clean"
+    assert report.review_items == []
 
 
 def test_pipeline_filters_generic_model_false_positives_and_token_artifacts():

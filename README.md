@@ -3,22 +3,25 @@
 De-identify interview or therapy transcripts using:
 
 1. deterministic patterns for email addresses, URLs, phone numbers, dates and long ID numbers;
-2. a project-approved language model for contextual identifiers such as names, schools,
+2. a local language model for contextual identifiers such as names, schools,
    organisations, addresses and places;
 3. stable placeholders such as `[NAME_1]` and `[SCHOOL_1]`;
-4. an independent second model pass and a mandatory human-review queue.
+4. an independent second local model pass and a mandatory human-review queue.
 
-The default project setup sends transcript text to the approved institution-managed vLLM server.
-That server exposes an OpenAI-compatible API and is intended for project researchers. A fully local
-Ollama setup is also available for testing or offline use.
+The default project setup sends transcript text to a secure Macquarie University-managed vLLM server.
+That server exposes an OpenAI-compatible API and is intended for project researchers, but it is only
+reachable from within the campus network — not directly from a personal laptop, even over Tailscale.
+You reach it by Tailscaling into a campus-based Macquarie machine and opening an SSH tunnel through
+it; the application itself still runs on your own computer, and transcripts never leave your device.
+A fully local Ollama setup is also available for testing or offline use.
 
 > De-identification reduces risk; it does not prove that a transcript is anonymous. Validate this
-> workflow against representative, manually annotated transcripts and retain human review.
+> workflow against human review.
 
 ## What you'll need
 
-- Tailscale installed and connected, so your computer can reach the project server (instructions
-  below);
+- Tailscale installed and connected, so your computer can reach a campus-based Macquarie University machine that has access to the project server (instructions below);
+- SSH access to that campus machine (a username and either a password or an SSH key — ask the project maintainer);
 - a project-issued inference API key;
 - Python 3.11 or newer;
 - this repository;
@@ -26,17 +29,24 @@ Ollama setup is also available for testing or offline use.
 
 The default server-based setup does not require a local GPU or local LLM installation.
 
-## 1. Connect to the server with Tailscale
+## 1. Connect to the project server
 
-The project server lives on an institutional machine that isn't reachable over the open internet.
+The project server lives on an institutional machine that isn't reachable over the open internet,
+and it isn't reachable directly from your computer even once you're on the tailnet — you first
+Tailscale into a campus-based machine that can see the server, then open an SSH tunnel through that
+machine. The application still runs on your own computer against `localhost`; the tunnel just
+relays traffic to the real server. You only need to set this up once per machine, and you'll need
+the tunnel open (see below) whenever you run the application.
+
+### Install Tailscale
+
 [Tailscale](https://tailscale.com) creates a private, secure network ("tailnet") between your
-computer and that machine, so you can reach the server without a full VPN client. You only need to
-set this up once.
+computer and the campus machine, so you can reach it without a full VPN client.
 
 Ask the project maintainer for a Tailscale auth key. Treat it like a password: don't share it,
 paste it into chat/email, or commit it anywhere.
 
-### Windows
+#### Windows
 
 1. Download and install Tailscale from <https://tailscale.com/download/windows>.
 2. Open PowerShell and run:
@@ -47,7 +57,7 @@ paste it into chat/email, or commit it anywhere.
 
 3. The Tailscale icon should appear in your system tray, showing you're connected.
 
-### macOS
+#### macOS
 
 1. Download and install Tailscale from <https://tailscale.com/download/mac> (or via the Mac App
    Store).
@@ -59,7 +69,7 @@ paste it into chat/email, or commit it anywhere.
 
 3. The Tailscale icon should appear in your menu bar, showing you're connected.
 
-### Ubuntu or other Linux
+#### Ubuntu or other Linux
 
 1. Install Tailscale:
 
@@ -73,15 +83,79 @@ paste it into chat/email, or commit it anywhere.
    sudo tailscale up --authkey=paste-your-auth-key-here
    ```
 
-### Check the connection
+#### Check the Tailscale connection
 
 Run `tailscale status` on any platform. You should see your own machine listed as `Connected`,
-along with the project server. Once this shows a connection, continue to the next step — the
-`doctor` command later in this guide gives a second confirmation that everything can talk to the
-server.
+along with the campus machine. If `tailscale up` fails or the auth key is rejected, the key may
+have expired; ask the project maintainer for a new one.
 
-If `tailscale up` fails or the auth key is rejected, the key may have expired; ask the project
-maintainer for a new one.
+### Open an SSH tunnel to the campus machine
+
+If you're more used to Remote Desktop, note that SSH here works quite differently: it does not
+give you a graphical desktop on the campus machine, and you don't type any commands there. It just
+opens a private, secure "pipe" between a port on your own computer and the server, using the campus
+machine to relay it. You leave that pipe open in one terminal window, and do all your actual work
+(the commands later in this guide) in a second terminal window, on your own computer.
+
+Ask the project maintainer for the campus machine's Tailscale name (or IP) and your SSH username —
+shown below as `campus-machine` and `your-username`.
+
+#### Windows
+
+Windows 10/11 include an SSH client already. Check it's there by opening PowerShell and running:
+
+```powershell
+ssh -V
+```
+
+If that prints a version number, you're set. If it says `ssh` isn't recognized, install it via
+**Settings → System → Optional features → Add a feature → OpenSSH Client**, then reopen PowerShell.
+
+Then open the tunnel:
+
+```powershell
+ssh -N -L 4200:10.204.35.227:4200 your-username@campus-machine
+```
+
+#### macOS or Linux
+
+Open Terminal and run:
+
+```bash
+ssh -N -L 4200:10.204.35.227:4200 your-username@campus-machine
+```
+
+#### What to expect
+
+- The first time you connect to a given machine, SSH shows a message like `The authenticity of
+  host 'campus-machine' can't be established... Are you sure you want to continue connecting
+  (yes/no)?`. This is normal for a first connection — type `yes` and press Enter.
+- You'll be prompted for a password (or passphrase, if using a key). Type it and press Enter; the
+  terminal won't show the characters as you type, which is normal for password prompts.
+- After that, the terminal will appear to just sit there with no further output and no prompt.
+  That's correct and expected — the `-N` flag tells SSH not to run a remote shell, only to hold the
+  tunnel open. Leave this window open and minimized; don't close it or press `Ctrl+C` until you're
+  done using the application.
+- To stop the tunnel, go back to that window and press `Ctrl+C`.
+
+Leave this SSH window running for as long as you want to use the application — closing it (or
+losing the connection) closes the tunnel and the next command you run will fail to reach the
+server. Open a separate terminal window for the commands later in this guide, and keep the SSH
+window open alongside it.
+
+If you're prompted for a password every time and would rather not be, ask the project maintainer
+about setting up an SSH key instead.
+
+Once the tunnel is open, the application (configured in the next step) talks to
+`http://localhost:4200`, and the tunnel relays that to the real server. The `doctor` command later
+in this guide gives a second confirmation that everything can talk to the server.
+
+If the SSH connection fails:
+
+- confirm Tailscale is connected (`tailscale status` should show you as `Connected`, alongside the
+  campus machine);
+- confirm your SSH username and password/key with the project maintainer;
+- do not continue with real transcripts until the tunnel connects.
 
 ## 2. Install this application
 
@@ -128,13 +202,28 @@ VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key
 VLLM_OUTPUT_MODE=native
 ```
 
-Open `.env` and replace `replace-with-issued-key` with your issued API key.
+Open `.env` and make two changes:
+
+- replace `replace-with-issued-key` with your issued API key;
+- replace `VLLM_BASE_URL` with `http://localhost:4200/v1`. The generated value points at the
+  server's real campus address, which is only reachable through the SSH tunnel from
+  [step 1](#1-connect-to-the-project-server), not directly from your computer. Pointing at
+  `localhost` sends traffic through that tunnel instead.
+
+```env
+DEID_ALLOW_REMOTE_LLM=true
+VLLM_BASE_URL=http://localhost:4200/v1
+VLLM_MODEL=large
+VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key
+VLLM_OUTPUT_MODE=native
+```
 
 Notes:
 
 - `DEID_ALLOW_REMOTE_LLM=true` confirms that this project is intentionally sending transcript text
   to the approved institutional server.
-- `VLLM_BASE_URL` is the server URL.
+- `VLLM_BASE_URL` must point at your end of the SSH tunnel (`http://localhost:4200/v1` if you
+  followed the example above), not the server's real address.
 - `VLLM_MODEL=large` must match the model name exposed by the server.
 - `VLLM_INFERENCE_HUB_API_KEY` should be the key issued to the researcher. Do not commit it.
 - `.env` is gitignored.
@@ -142,7 +231,8 @@ Notes:
   `deidentify-transcripts init-config --force` only if you intentionally want to replace the
   existing file.
 
-Check the configuration and model connection:
+Check the configuration and model connection. Make sure the SSH tunnel from step 1 is still open
+in its own terminal, then in another terminal run:
 
 ```bash
 deidentify-transcripts doctor
@@ -151,11 +241,12 @@ deidentify-transcripts doctor
 Expected output resembles:
 
 ```text
-OK: remote vllm endpoint http://10.204.35.227:4200/v1; model large
+OK: remote vllm endpoint http://localhost:4200/v1; model large
 ```
 
 If `doctor` fails:
 
+- confirm the SSH tunnel from step 1 is still open;
 - confirm Tailscale is connected (`tailscale status` should show you as `Connected`);
 - confirm the API key was copied correctly;
 - confirm the server URL and model name with the project maintainer;
@@ -318,6 +409,9 @@ deidentify-transcripts run examples/complex-synthetic-transcript.txt \
 
 ## 6. Run de-identification
 
+Make sure your SSH tunnel from [step 1](#1-connect-to-the-project-server) is still open in its own
+terminal before running the commands below.
+
 Run a small example first:
 
 Ubuntu, macOS or Linux:
@@ -385,6 +479,8 @@ unresolved items; it is not a certification of anonymity.
 
 - Paths use `/`, for example `examples/sample-transcript.txt`.
 - Activate the environment with `source .venv/bin/activate`.
+- Close the SSH tunnel (`Ctrl+C` in its terminal) when you're finished for the day; it doesn't need
+  to stay open outside of active sessions.
 - Restrict local output permissions where appropriate:
 
 ```bash
@@ -405,8 +501,8 @@ Keep Ollama on localhost. Do not configure `OLLAMA_HOST=0.0.0.0` for sensitive t
 - Obtain ethics, governance and information-security approval for the project.
 - Use an institution-managed computer and approved encrypted storage.
 - Use the project server only from approved accounts and networks.
-- Keep API keys and your Tailscale auth key secret; do not paste them into notebooks, scripts,
-  chat, email, commits or screenshots.
+- Keep API keys, your Tailscale auth key and your SSH credentials secret; do not paste them into
+  notebooks, scripts, chat, email, commits or screenshots.
 - If using local Ollama, keep it bound to `localhost`; do not expose port `11434` publicly.
 - Use `DEID_ALLOW_REMOTE_LLM=true` only for approved institution-managed endpoints.
 - Do not use cloud-hosted Ollama models.

@@ -12,6 +12,7 @@ PiiType = Literal[
     "school",
     "place",
     "organisation",
+    "occupation",
     "address",
     "postcode",
     "date",
@@ -19,6 +20,7 @@ PiiType = Literal[
     "email",
     "url",
     "id_number",
+    "social_media_handle",
     "other",
 ]
 

@@ -5,6 +5,11 @@ from collections.abc import Callable
 
 from .schemas import PiiMention, PiiMentions, PiiSpan, PiiType
 
+_MONTH = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
+    r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+
 _PATTERNS: list[tuple[PiiType, re.Pattern[str]]] = [
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")),
     ("url", re.compile(r"\bhttps?://\S+")),
@@ -14,7 +19,16 @@ _PATTERNS: list[tuple[PiiType, re.Pattern[str]]] = [
         re.compile(r"(?<!\w)\+?\d(?:[\s().-]?\d){7,14}(?!\w)"),
     ),
     ("date", re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")),
+    # Written dates: "March 2020", "March 15, 2020", "15th March", "15th of March". Deliberately
+    # not adding a blanket standalone-4-digit-year pattern here (unlike Aria) — it would flag any
+    # 19xx/20xx number regardless of context (a dollar amount, an ID, a participant count), which
+    # doesn't fit this project's existing care around false positives. Birth-year mentions are
+    # instead left to the LLM prompt below, which can judge them contextually.
+    ("date", re.compile(rf"\b{_MONTH}(?:\s+\d{{1,2}}(?:st|nd|rd|th)?)?,?\s+\d{{4}}\b", re.IGNORECASE)),
+    ("date", re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTH}\b", re.IGNORECASE)),
     ("id_number", re.compile(r"\b\d{7,}\b")),
+    # Social media handles: @username (negative lookbehind avoids matching email local-parts)
+    ("social_media_handle", re.compile(r"(?<!\w)@[A-Za-z][A-Za-z0-9_.]{1,}")),
 ]
 
 _BARE_GENERIC_PII: dict[str, set[str]] = {
@@ -71,15 +85,30 @@ _GENERIC_PLACE_PREFIXES = {
 DETECTION_SYSTEM = (
     "Find personally identifying information in one transcript turn. Return each mention's EXACT "
     "text and one type from: person_name, nickname, family_member, clinician_name, school, place, "
-    "organisation, address, postcode. Do not include phone numbers, email addresses, dates, URLs or "
-    "long ID numbers because deterministic patterns handle those. Return genuine identifiers only. "
+    "organisation, occupation, address, postcode, social_media_handle, other. Do not include phone "
+    "numbers, email addresses, dates, URLs, social media handles or long ID numbers because "
+    "deterministic patterns handle those. Return genuine identifiers only. "
     "Do not return generic words or ordinary descriptive phrases such as school, undergrad, class, "
     "work, at home, your home, kids, children, sir, doctor, husband or sister. Pronouns and ordinary "
     "conversation words such as I, you, yes, no, okay, thanks and sorry are never names. Questions or "
     "descriptions such as 'your name', 'where you study', 'your school' and 'who is your doctor' are "
     "not identifiers: return only the actual answer, such as Maya Patel, Oak Park School or Dr Smith. "
     "Return generic terms only as part of a specific identifying phrase such as Sarah's sister or a "
-    "named workplace. Confidence must be between 0 and 1."
+    "named workplace. Confidence must be between 0 and 1.\n"
+    "ORGANISATIONS — flag any named organisation as organisation: companies, charities, NGOs, "
+    "churches, mosques, temples, sporting clubs, community groups, government agencies, and "
+    "specific named employers or workplaces. Generic words like 'work', 'company', 'church', or "
+    "'club' alone are not identifiers — only when a specific name is given.\n"
+    "OCCUPATIONS — flag the job title or profession of the participant or a family member as "
+    "occupation when it is stated personally (e.g. 'I work as a nurse', 'my dad is a carpenter', "
+    "'she works as an accountant'). Do not flag generic role words used in a scripted question "
+    "(e.g. 'asking the teacher a question', 'talking to a doctor') — only personal occupation "
+    "disclosures about the participant or their family.\n"
+    "ALSO return:\n"
+    "- Names of friends, classmates, neighbours, or peers as person_name.\n"
+    "- School year or grade level as other (e.g. 'Year 6', 'Grade 5', '6th grade').\n"
+    "- A year given in the context of someone's birth or age as date "
+    "(e.g. 'born in 2015', 'he turned ten in 2019')."
 )
 
 

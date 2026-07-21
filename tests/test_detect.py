@@ -19,6 +19,28 @@ def test_phone_regex_leaves_sentence_punctuation_outside_span():
     assert phone.text == "0412 345 678"
 
 
+def test_written_dates_are_detected():
+    for text, expected in [
+        ("It happened in March 2020.", "March 2020"),
+        ("Her birthday was March 15, 2020.", "March 15, 2020"),
+        ("He starts on 15th March.", "15th March"),
+        ("The appointment is on the 3rd of April.", "3rd of April"),
+    ]:
+        spans = [span for span in regex_spans(0, text) if span.pii_type == "date"]
+        assert any(span.text == expected for span in spans), (text, spans)
+
+
+def test_social_media_handle_is_detected():
+    spans = regex_spans(0, "Follow me @alex_smith for updates.")
+    handles = [span for span in spans if span.pii_type == "social_media_handle"]
+    assert [span.text for span in handles] == ["@alex_smith"]
+
+
+def test_social_media_handle_does_not_match_email_local_part():
+    spans = regex_spans(0, "Email alex@example.org for details.")
+    assert not any(span.pii_type == "social_media_handle" for span in spans)
+
+
 def test_generic_school_is_filtered_but_named_school_is_retained():
     spans = [
         PiiSpan(

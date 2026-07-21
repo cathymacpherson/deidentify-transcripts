@@ -11,11 +11,16 @@ _TOKEN_ARTIFACT_RE = re.compile(r"^\[?[A-Z]+_\d+\]?$")
 
 RESIDUAL_SYSTEM = (
     "This transcript turn has already been de-identified with [BRACKETED_TOKENS]. Find any remaining "
-    "personally identifying information that is not already a token: names, schools, places, "
-    "organisations, addresses and postcodes. Do not return generic words such as school, work, home, "
-    "doctor, husband or sister by themselves. Never return an existing token or the inside of a "
-    "token, for example [NAME_1], NAME_1, [PLACE_2] or PLACE_2. Return exact remaining identifier "
-    "strings, or an empty list if none remain."
+    "personally identifying information that is not already a token: names of real people (including "
+    "friends, classmates, neighbours, and peers), schools, places, organisations, personal occupation "
+    "disclosures (job titles stated about the participant or a family member), addresses, postcodes, "
+    "school year or grade levels, and birth year references. Do not return generic words such as "
+    "school, work, home, doctor, husband or sister by themselves. Never return an existing token or "
+    "the inside of a token, for example [NAME_1], NAME_1, [PLACE_2] or PLACE_2. "
+    "Do NOT flag: widely-known public figures, celebrities, or athletes; fictional characters from "
+    "books, films, or games; well-known brand names or chain stores; research program or study names "
+    "used by the interviewer. "
+    "Return exact remaining identifier strings, or an empty list if none remain."
 )
 
 
@@ -44,6 +49,8 @@ def validate(
         for hit in residual_fn(turn.turn_id, turn.anonymised_text):
             if _TOKEN_ARTIFACT_RE.fullmatch(hit.strip()) or is_bare_generic_identifier(hit):
                 continue
+            if hit.lower() not in turn.anonymised_text.lower():
+                continue  # the model returned text that isn't actually present in this turn
             key = (turn.turn_id, hit, "residual PII (gate)")
             if key not in seen:
                 seen.add(key)
