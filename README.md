@@ -2,11 +2,13 @@
 
 De-identify interview or therapy transcripts using:
 
-1. deterministic patterns for email addresses, URLs, phone numbers, dates and long ID numbers;
+1. deterministic patterns for email addresses, URLs, phone numbers, numeric and written dates (for
+   example `March 2020` or `15th of April`), social media handles and long ID numbers;
 2. a local language model for contextual identifiers such as names, schools,
-   organisations, addresses and places;
+   organisations, occupations, addresses and places;
 3. stable placeholders such as `[NAME_1]` and `[SCHOOL_1]`;
-4. an independent second local model pass and a mandatory human-review queue.
+4. an independent second local model pass that auto-corrects any residual identifier it confirms,
+   plus a human-review queue for anything it can't confirm with confidence.
 
 The default project setup sends transcript text to a secure Macquarie University-managed vLLM server.
 That server exposes an OpenAI-compatible API and is intended for project researchers, but it is only
@@ -448,8 +450,10 @@ output/
 - `sensitive/` contains original identifiers and must remain in approved encrypted storage. Each
   de-identification report also records the selected model, the Ollama digest when available, the
   pipeline version and the UTC run-start time.
-- An exit code of `2` means the run completed but human review is required. This is common and does
-  not mean the software crashed.
+- An exit code of `2` means the run completed but human review is required — specifically, a
+  stage-1 detection the model wasn't confident about. This is common and does not mean the software
+  crashed. It does not fire for a residual identifier the second pass independently confirmed and
+  auto-corrected; see [7. Review the results](#7-review-the-results).
 - Running the same transcript ID again overwrites that ID's previous output files. Use another
   `--output-dir` or copy the previous files when comparing models.
 
@@ -469,11 +473,24 @@ Always inspect:
 
 The detector processes each turn using the configured model. It then deterministically propagates
 identifiers already found elsewhere in the transcript, so repeated names receive the same token. A
-second model pass checks the redacted text for remaining identifiers.
+second model pass checks the redacted text for anything left over.
 
-The review queue may contain genuine misses as well as conservative false alarms. Both require a
-human decision. The automated status `clean` means only that the configured checks found no
-unresolved items; it is not a certification of anonymity.
+The review queue (`review-queue.jsonl`) can contain two different kinds of entry, distinguished by
+their `reason` field:
+
+- `reason: "gate: auto-corrected"` — the second pass found and confirmed a residual identifier that
+  slipped through stage 1. The pipeline has already redacted it everywhere it appears in the
+  transcript and registered it under a token; no action is required, but it's worth spot-checking
+  that the auto-redaction looks right. Entries like this do not, by themselves, put the run into
+  `needs_review` status or affect the exit code.
+- `reason: "low-confidence detection"` — a stage-1 detection the model wasn't confident about. This
+  is a genuine judgement call and needs a human decision: confirm it's an identifier (and redact it
+  manually) or dismiss it as a false alarm. Entries like this do put the run into `needs_review`
+  status and produce exit code `2`.
+
+The automated status `clean` means only that no low-confidence detections were left outstanding —
+not that the second pass found nothing (it may have auto-corrected something) and not a
+certification of anonymity. Always read the anonymised transcript yourself regardless of status.
 
 ## 8. Platform notes
 
