@@ -12,7 +12,7 @@ def test_init_config_writes_project_server_env(tmp_path):
     assert result.exit_code == 0
     content = env_path.read_text(encoding="utf-8")
     assert "DEID_ALLOW_REMOTE_LLM=true" in content
-    assert "VLLM_BASE_URL=http://10.204.35.227:4200/v1" in content
+    assert "VLLM_BASE_URL=http://100.127.175.5:4200/v1" in content
     assert "VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key" in content
 
 

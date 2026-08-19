@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 
 PROJECT_ENV_TEMPLATE = """# Default project setup: approved institutional vLLM/OpenAI-compatible endpoint.
 # Transcript text is sent to this secure project server for de-identification.
+# Reachable directly over Tailscale once your machine has joined the project's tailnet.
 DEID_ALLOW_REMOTE_LLM=true
-VLLM_BASE_URL=http://10.204.35.227:4200/v1
+VLLM_BASE_URL=http://100.127.175.5:4200/v1
 VLLM_MODEL=large
 VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key
 VLLM_OUTPUT_MODE=native

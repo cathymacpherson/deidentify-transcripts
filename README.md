@@ -11,19 +11,18 @@ De-identify interview or therapy transcripts using:
    plus a human-review queue for anything it can't confirm with confidence.
 
 The default project setup sends transcript text to a secure Macquarie University-managed vLLM server.
-That server exposes an OpenAI-compatible API and is intended for project researchers, but it is only
-reachable from within the campus network — not directly from a personal laptop, even over Tailscale.
-You reach it by Tailscaling into a campus-based Macquarie machine and opening an SSH tunnel through
-it; the application itself still runs on your own computer, and transcripts never leave your device.
-A fully local Ollama setup is also available for testing or offline use.
+That server exposes an OpenAI-compatible API and is intended for project researchers. Collaborators
+reach it directly over Tailscale, using the server's tailnet IP address — access is being granted for
+a limited time while this setup is tested. The application itself still runs on your own computer,
+and transcripts leave your device only to reach that approved server. A fully local Ollama setup is
+also available for testing or offline use.
 
 > De-identification reduces risk; it does not prove that a transcript is anonymous. Validate this
 > workflow against human review.
 
 ## What you'll need
 
-- Tailscale installed and connected, so your computer can reach a campus-based Macquarie University machine that has access to the project server (instructions below);
-- SSH access to that campus machine (a username and either a password or an SSH key — ask the project maintainer);
+- Tailscale installed, signed in with your own account, with the vLLM server machine shared to you by the project maintainer (instructions below);
 - a project-issued inference API key;
 - Python 3.11 or newer;
 - this repository;
@@ -33,131 +32,62 @@ The default server-based setup does not require a local GPU or local LLM install
 
 ## 1. Connect to the project server
 
-The project server lives on an institutional machine that isn't reachable over the open internet,
-and it isn't reachable directly from your computer even once you're on the tailnet — you first
-Tailscale into a campus-based machine that can see the server, then open an SSH tunnel through that
-machine. The application still runs on your own computer against `localhost`; the tunnel just
-relays traffic to the real server. You only need to set this up once per machine, and you'll need
-the tunnel open (see below) whenever you run the application.
+The project server lives on an institutional machine that isn't reachable over the open internet.
+Once the project maintainer has shared it with your Tailscale account and you've accepted the
+invite, you can reach the server directly at its tailnet IP address — no SSH tunnel or intermediate
+machine needed. You only need to set this up once per machine, and Tailscale needs to stay
+connected whenever you run the application.
 
-### Install Tailscale
+### Install Tailscale and accept the share invite
 
 [Tailscale](https://tailscale.com) creates a private, secure network ("tailnet") between your
-computer and the campus machine, so you can reach it without a full VPN client.
+computer and the project server, so you can reach it without a full VPN client. Access here works
+by device sharing: the project maintainer shares just the vLLM server machine with your account,
+and you accept that share by email — you do not need a shared auth key, and there's nothing secret
+in the invite email itself, since accepting it requires signing in as you.
 
-Ask the project maintainer for a Tailscale auth key. Treat it like a password: don't share it,
-paste it into chat/email, or commit it anywhere.
+1. Install Tailscale for your platform:
+   - Windows: <https://tailscale.com/download/windows>
+   - macOS: <https://tailscale.com/download/mac> (or via the Mac App Store)
+   - Ubuntu or other Linux:
 
-#### Windows
+     ```bash
+     curl -fsSL https://tailscale.com/install.sh | sh
+     ```
 
-1. Download and install Tailscale from <https://tailscale.com/download/windows>.
-2. Open PowerShell and run:
-
-   ```powershell
-   & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=paste-your-auth-key-here
-   ```
-
-3. The Tailscale icon should appear in your system tray, showing you're connected.
-
-#### macOS
-
-1. Download and install Tailscale from <https://tailscale.com/download/mac> (or via the Mac App
-   Store).
-2. Open Terminal and run:
-
-   ```bash
-   sudo tailscale up --authkey=paste-your-auth-key-here
-   ```
-
-3. The Tailscale icon should appear in your menu bar, showing you're connected.
-
-#### Ubuntu or other Linux
-
-1. Install Tailscale:
-
-   ```bash
-   curl -fsSL https://tailscale.com/install.sh | sh
-   ```
-
-2. Connect using your auth key:
-
-   ```bash
-   sudo tailscale up --authkey=paste-your-auth-key-here
-   ```
+2. Open the Tailscale app (or run `tailscale up` on Linux) and sign in with your own account —
+   whichever identity provider Tailscale offers (Google, Microsoft, GitHub, passkey, etc.). This
+   does not require an auth key.
+3. Ask the project maintainer to share the vLLM server machine with the email address tied to that
+   account, if they haven't already. You'll receive an email from Tailscale with a link to accept
+   the share.
+4. Open that link and accept it. The server machine will then appear as a node in your own tailnet
+   — you don't gain access to the maintainer's whole tailnet, only that one shared machine.
 
 #### Check the Tailscale connection
 
-Run `tailscale status` on any platform. You should see your own machine listed as `Connected`,
-along with the campus machine. If `tailscale up` fails or the auth key is rejected, the key may
-have expired; ask the project maintainer for a new one.
+Run `tailscale status`. You should see your own machine listed as `Connected`, and the shared
+server machine listed among your peers. If you don't see the server listed, the share invite may
+not have been accepted yet, or may have expired — check your email or ask the project maintainer
+to re-share it.
 
-### Open an SSH tunnel to the campus machine
+### Check you can reach the server
 
-If you're more used to Remote Desktop, note that SSH here works quite differently: it does not
-give you a graphical desktop on the campus machine, and you don't type any commands there. It just
-opens a private, secure "pipe" between a port on your own computer and the server, using the campus
-machine to relay it. You leave that pipe open in one terminal window, and do all your actual work
-(the commands later in this guide) in a second terminal window, on your own computer.
-
-Ask the project maintainer for the campus machine's Tailscale name (or IP) and your SSH username —
-shown below as `campus-machine` and `your-username`.
-
-#### Windows
-
-Windows 10/11 include an SSH client already. Check it's there by opening PowerShell and running:
-
-```powershell
-ssh -V
-```
-
-If that prints a version number, you're set. If it says `ssh` isn't recognized, install it via
-**Settings → System → Optional features → Add a feature → OpenSSH Client**, then reopen PowerShell.
-
-Then open the tunnel:
-
-```powershell
-ssh -N -L 4200:10.204.35.227:4200 your-username@campus-machine
-```
-
-#### macOS or Linux
-
-Open Terminal and run:
+The vLLM server's tailnet IP address is `100.127.175.5`. Once Tailscale is connected, confirm you
+can reach it:
 
 ```bash
-ssh -N -L 4200:10.204.35.227:4200 your-username@campus-machine
+curl http://100.127.175.5:4200/v1/models
 ```
 
-#### What to expect
+You should get back a JSON response listing the available model(s). The `doctor` command later in
+this guide gives a second confirmation that everything can talk to the server.
 
-- The first time you connect to a given machine, SSH shows a message like `The authenticity of
-  host 'campus-machine' can't be established... Are you sure you want to continue connecting
-  (yes/no)?`. This is normal for a first connection — type `yes` and press Enter.
-- You'll be prompted for a password (or passphrase, if using a key). Type it and press Enter; the
-  terminal won't show the characters as you type, which is normal for password prompts.
-- After that, the terminal will appear to just sit there with no further output and no prompt.
-  That's correct and expected — the `-N` flag tells SSH not to run a remote shell, only to hold the
-  tunnel open. Leave this window open and minimized; don't close it or press `Ctrl+C` until you're
-  done using the application.
-- To stop the tunnel, go back to that window and press `Ctrl+C`.
+If the connection fails:
 
-Leave this SSH window running for as long as you want to use the application — closing it (or
-losing the connection) closes the tunnel and the next command you run will fail to reach the
-server. Open a separate terminal window for the commands later in this guide, and keep the SSH
-window open alongside it.
-
-If you're prompted for a password every time and would rather not be, ask the project maintainer
-about setting up an SSH key instead.
-
-Once the tunnel is open, the application (configured in the next step) talks to
-`http://localhost:4200`, and the tunnel relays that to the real server. The `doctor` command later
-in this guide gives a second confirmation that everything can talk to the server.
-
-If the SSH connection fails:
-
-- confirm Tailscale is connected (`tailscale status` should show you as `Connected`, alongside the
-  campus machine);
-- confirm your SSH username and password/key with the project maintainer;
-- do not continue with real transcripts until the tunnel connects.
+- confirm Tailscale is connected (`tailscale status` should show you as `Connected`);
+- confirm the server's tailnet IP with the project maintainer, in case it has changed;
+- do not continue with real transcripts until this succeeds.
 
 ## 2. Install this application
 
@@ -198,34 +128,23 @@ This writes `.env` with the approved server settings:
 
 ```env
 DEID_ALLOW_REMOTE_LLM=true
-VLLM_BASE_URL=http://10.204.35.227:4200/v1
+VLLM_BASE_URL=http://100.127.175.5:4200/v1
 VLLM_MODEL=large
 VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key
 VLLM_OUTPUT_MODE=native
 ```
 
-Open `.env` and make two changes:
+`VLLM_BASE_URL` already points at the server's tailnet IP address, reachable directly once
+Tailscale is connected — no further edits needed there. Open `.env` and make one change:
 
-- replace `replace-with-issued-key` with your issued API key;
-- replace `VLLM_BASE_URL` with `http://localhost:4200/v1`. The generated value points at the
-  server's real campus address, which is only reachable through the SSH tunnel from
-  [step 1](#1-connect-to-the-project-server), not directly from your computer. Pointing at
-  `localhost` sends traffic through that tunnel instead.
-
-```env
-DEID_ALLOW_REMOTE_LLM=true
-VLLM_BASE_URL=http://localhost:4200/v1
-VLLM_MODEL=large
-VLLM_INFERENCE_HUB_API_KEY=replace-with-issued-key
-VLLM_OUTPUT_MODE=native
-```
+- replace `replace-with-issued-key` with your issued API key.
 
 Notes:
 
 - `DEID_ALLOW_REMOTE_LLM=true` confirms that this project is intentionally sending transcript text
   to the approved institutional server.
-- `VLLM_BASE_URL` must point at your end of the SSH tunnel (`http://localhost:4200/v1` if you
-  followed the example above), not the server's real address.
+- `VLLM_BASE_URL` must point at the server's tailnet IP address; ask the project maintainer if it
+  changes.
 - `VLLM_MODEL=large` must match the model name exposed by the server.
 - `VLLM_INFERENCE_HUB_API_KEY` should be the key issued to the researcher. Do not commit it.
 - `.env` is gitignored.
@@ -233,8 +152,7 @@ Notes:
   `deidentify-transcripts init-config --force` only if you intentionally want to replace the
   existing file.
 
-Check the configuration and model connection. Make sure the SSH tunnel from step 1 is still open
-in its own terminal, then in another terminal run:
+Check the configuration and model connection. Make sure Tailscale is still connected, then run:
 
 ```bash
 deidentify-transcripts doctor
@@ -243,15 +161,14 @@ deidentify-transcripts doctor
 Expected output resembles:
 
 ```text
-OK: remote vllm endpoint http://localhost:4200/v1; model large
+OK: remote vllm endpoint http://100.127.175.5:4200/v1; model large
 ```
 
 If `doctor` fails:
 
-- confirm the SSH tunnel from step 1 is still open;
 - confirm Tailscale is connected (`tailscale status` should show you as `Connected`);
 - confirm the API key was copied correctly;
-- confirm the server URL and model name with the project maintainer;
+- confirm the server's tailnet IP and model name with the project maintainer;
 - do not continue with real transcripts until `doctor` succeeds.
 
 ## 4. Optional local-only fallback
@@ -411,8 +328,8 @@ deidentify-transcripts run examples/complex-synthetic-transcript.txt \
 
 ## 6. Run de-identification
 
-Make sure your SSH tunnel from [step 1](#1-connect-to-the-project-server) is still open in its own
-terminal before running the commands below.
+Make sure Tailscale is still connected (see [step 1](#1-connect-to-the-project-server)) before
+running the commands below.
 
 Run a small example first:
 
@@ -496,8 +413,8 @@ certification of anonymity. Always read the anonymised transcript yourself regar
 
 - Paths use `/`, for example `examples/sample-transcript.txt`.
 - Activate the environment with `source .venv/bin/activate`.
-- Close the SSH tunnel (`Ctrl+C` in its terminal) when you're finished for the day; it doesn't need
-  to stay open outside of active sessions.
+- Disconnect Tailscale (`tailscale down`) when you're finished for the day; it doesn't need to stay
+  connected outside of active sessions.
 - Restrict local output permissions where appropriate:
 
 ```bash
@@ -518,8 +435,10 @@ Keep Ollama on localhost. Do not configure `OLLAMA_HOST=0.0.0.0` for sensitive t
 - Obtain ethics, governance and information-security approval for the project.
 - Use an institution-managed computer and approved encrypted storage.
 - Use the project server only from approved accounts and networks.
-- Keep API keys, your Tailscale auth key and your SSH credentials secret; do not paste them into
-  notebooks, scripts, chat, email, commits or screenshots.
+- Keep your issued API key secret; do not paste it into notebooks, scripts, chat, commits or
+  screenshots.
+- Don't forward the Tailscale share invite email to anyone else; it's tied to your own account, and
+  the project maintainer should share the server directly with any additional collaborator instead.
 - If using local Ollama, keep it bound to `localhost`; do not expose port `11434` publicly.
 - Use `DEID_ALLOW_REMOTE_LLM=true` only for approved institution-managed endpoints.
 - Do not use cloud-hosted Ollama models.
