@@ -8,15 +8,15 @@ from deidentify_transcripts.schemas import PiiSpan
 
 
 def test_regex_detects_structured_pii():
-    text = "Call 0412 345 678, email alex@example.org on 12/03/2024."
+    text = "Call 212-555-0147, email alex@example.org on 12/03/2024."
     types = {span.pii_type for span in regex_spans(0, text)}
     assert {"phone", "email", "date"} <= types
 
 
 def test_phone_regex_leaves_sentence_punctuation_outside_span():
-    spans = regex_spans(0, "Call 0412 345 678.")
+    spans = regex_spans(0, "Call 212-555-0147.")
     phone = next(span for span in spans if span.pii_type == "phone")
-    assert phone.text == "0412 345 678"
+    assert phone.text == "212-555-0147"
 
 
 def test_written_dates_are_detected():
@@ -28,6 +28,17 @@ def test_written_dates_are_detected():
     ]:
         spans = [span for span in regex_spans(0, text) if span.pii_type == "date"]
         assert any(span.text == expected for span in spans), (text, spans)
+
+
+def test_bare_year_is_detected():
+    spans = [span for span in regex_spans(0, "It happened in 2019.") if span.pii_type == "date"]
+    assert any(span.text == "2019" for span in spans)
+
+
+def test_bare_year_inside_full_date_is_not_duplicated():
+    spans = merge_spans(regex_spans(0, "My first appointment was 14/09/2024."))
+    date_spans = [span for span in spans if span.pii_type == "date"]
+    assert [span.text for span in date_spans] == ["14/09/2024"]
 
 
 def test_social_media_handle_is_detected():

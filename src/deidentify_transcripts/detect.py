@@ -15,17 +15,21 @@ _PATTERNS: list[tuple[PiiType, re.Pattern[str]]] = [
     ("url", re.compile(r"\bhttps?://\S+")),
     (
         "phone",
-        # Starts and ends on a digit so sentence punctuation is not swallowed by the token.
-        re.compile(r"(?<!\w)\+?\d(?:[\s().-]?\d){7,14}(?!\w)"),
+        # US/Canada (NANP) numbers: optional +1/1 country code, optional parenthesised area code,
+        # area code and exchange code each start with 2-9. Covers (555) 123-4567, 555-123-4567,
+        # 555.123.4567, +1 555-123-4567 and 5551234567. Non-US-shaped numbers won't match this —
+        # "phone numbers" is deliberately not in the LLM's exclusion list below, so those are
+        # still caught contextually instead of silently missed.
+        re.compile(r"(?<!\w)(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?[2-9]\d{2}[-.\s]?\d{4}(?!\w)"),
     ),
     ("date", re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")),
-    # Written dates: "March 2020", "March 15, 2020", "15th March", "15th of March". Deliberately
-    # not adding a blanket standalone-4-digit-year pattern here (unlike Aria) — it would flag any
-    # 19xx/20xx number regardless of context (a dollar amount, an ID, a participant count), which
-    # doesn't fit this project's existing care around false positives. Birth-year mentions are
-    # instead left to the LLM prompt below, which can judge them contextually.
+    # Written dates: "March 2020", "March 15, 2020", "15th March", "15th of March".
     ("date", re.compile(rf"\b{_MONTH}(?:\s+\d{{1,2}}(?:st|nd|rd|th)?)?,?\s+\d{{4}}\b", re.IGNORECASE)),
     ("date", re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTH}\b", re.IGNORECASE)),
+    # Standalone year, e.g. "in 2019" or "born 1998". This also flags any other bare 19xx/20xx
+    # number (a dollar amount, an ID, a participant count) — accepted so no bare year survives
+    # redaction just because it lacked explicit birth/age framing for the LLM to key off.
+    ("date", re.compile(r"\b(?:19|20)\d{2}\b")),
     ("id_number", re.compile(r"\b\d{7,}\b")),
     # Social media handles: @username (negative lookbehind avoids matching email local-parts)
     ("social_media_handle", re.compile(r"(?<!\w)@[A-Za-z][A-Za-z0-9_.]{1,}")),
@@ -85,9 +89,11 @@ _GENERIC_PLACE_PREFIXES = {
 DETECTION_SYSTEM = (
     "Find personally identifying information in one transcript turn. Return each mention's EXACT "
     "text and one type from: person_name, nickname, family_member, clinician_name, school, place, "
-    "organisation, occupation, address, postcode, social_media_handle, other. Do not include phone "
-    "numbers, email addresses, dates, URLs, social media handles or long ID numbers because "
-    "deterministic patterns handle those. Return genuine identifiers only. "
+    "organisation, occupation, address, postcode, social_media_handle, other. Do not include email "
+    "addresses, dates, URLs, social media handles or long ID numbers because deterministic patterns "
+    "handle those. Standard US phone number formats are also handled deterministically, but still "
+    "flag any phone number in a non-US format as phone, since deterministic matching won't catch "
+    "those. Return genuine identifiers only. "
     "Do not return generic words or ordinary descriptive phrases such as school, undergrad, class, "
     "work, at home, your home, kids, children, sir, doctor, husband or sister. Pronouns and ordinary "
     "conversation words such as I, you, yes, no, okay, thanks and sorry are never names. Questions or "
@@ -107,6 +113,8 @@ DETECTION_SYSTEM = (
     "ALSO return:\n"
     "- Names of friends, classmates, neighbours, or peers as person_name.\n"
     "- School year or grade level as other (e.g. 'Year 6', 'Grade 5', '6th grade').\n"
+    "- A 5-digit US ZIP code, optionally with a ZIP+4 suffix, that is clearly a postal code in "
+    "context as postcode (e.g. 90210 or 90210-1234).\n"
     "- A year given in the context of someone's birth or age as date "
     "(e.g. 'born in 2015', 'he turned ten in 2019')."
 )

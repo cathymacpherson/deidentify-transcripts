@@ -13,7 +13,7 @@ RESIDUAL_SYSTEM = (
     "This transcript turn has already been de-identified with [BRACKETED_TOKENS]. Find any remaining "
     "personally identifying information that is not already a token: names of real people (including "
     "friends, classmates, neighbours, and peers), schools, places, organisations, personal occupation "
-    "disclosures (job titles stated about the participant or a family member), addresses, postcodes, "
+    "disclosures (job titles stated about the participant or a family member), addresses, ZIP codes, "
     "school year or grade levels, and birth year references. Do not return generic words such as "
     "school, work, home, doctor, husband or sister by themselves. Never return an existing token or "
     "the inside of a token, for example [NAME_1], NAME_1, [PLACE_2] or PLACE_2. "

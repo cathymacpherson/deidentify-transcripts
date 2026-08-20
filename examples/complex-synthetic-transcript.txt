@@ -1,7 +1,7 @@
 Interviewer: Before we start, can you confirm your name?
 Participant: My name is Eleanor Jane Hart, but everyone calls me Ellie.
 Interviewer: Thanks, Ellie. Who do you live with?
-Participant: I live with my husband, Marcus Hart, and our daughter Sophie at 27 Wattlebird Lane, Northbridge, NSW 2063.
+Participant: I live with my husband, Marcus Hart, and our daughter Sophie at 27 Wattlebird Lane, Northbridge, CA 90071.
 Interviewer: Does Marcus work nearby?
 Participant: Marcus works at Blue Lantern Robotics in the Harbour Technology Centre.
 Interviewer: Where does Sophie go to school?
@@ -9,7 +9,7 @@ Participant: Sophie attends Greystone Heights College, although we usually just 
 Interviewer: Who is your usual doctor?
 Participant: My GP is Dr Priya Nand at Riverside Family Medical Centre, and my psychologist is Daniel Cho.
 Interviewer: How can the clinic contact you?
-Participant: My mobile is 0412 987 654 and my home number is (02) 9123 4567.
+Participant: My mobile is 415-555-0134 and my home number is (415) 555-0198.
 Participant: My email is eleanor.hart@example.org and my profile is at https://example.org/ellie-hart.
 Interviewer: Do you remember when you first attended the clinic?
 Participant: My first appointment was 14/09/2024, and my patient number is 84729163.
@@ -24,5 +24,5 @@ Participant: Home can be noisy, but work is flexible. My manager lets me leave e
 Interviewer: Did ELEANOR speak with Dr Nand about the anxiety?
 Participant: Yes, Dr Nand referred Ellie to Daniel, and Daniel suggested a support group at St Vincent's Community Hall.
 Interviewer: Is there anything else that could identify you?
-Participant: The emergency contact form lists Marcus on 0491-222-333 and says I volunteer for Northbridge Wildlife Rescue.
+Participant: The emergency contact form lists Marcus on 212-555-0161 and says I volunteer for Northbridge Wildlife Rescue.
 
