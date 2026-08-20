@@ -218,6 +218,17 @@ deidentify-transcripts run transcript.txt --id participant-001 --output-dir outp
 For a real transcript, replace `transcript.txt` with the approved local path to the transcript file.
 Use `--id` to assign the participant/study identifier you want in the output filenames.
 
+To process every `.txt` and `.json` transcript in a folder in one go, use `batch` instead of `run`:
+
+```bash
+deidentify-transcripts batch transcripts/ --output-dir output
+```
+
+Each file's transcript ID defaults to its filename stem (there's no `--id` option for `batch`, since
+it applies to a single output). `batch` keeps going if one file fails, then exits `1` if any file
+failed outright or `2` if any succeeded but need review (matching `run`'s exit codes) — check the
+per-file summary lines it prints to see which.
+
 Outputs:
 
 ```text

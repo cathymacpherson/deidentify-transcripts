@@ -25,6 +25,10 @@ def _pipeline_version() -> str:
         return "unknown"
 
 
+def _discover_transcripts(input_dir: Path) -> list[Path]:
+    return sorted(p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in (".txt", ".json"))
+
+
 @app.command("init-config")
 def init_config(
     output_path: Path = typer.Option(Path(".env"), "--output", "-o", help="Where to write the env file"),
@@ -110,6 +114,65 @@ def run(
     typer.echo(f"sensitive report: {report_path}")
     typer.echo(f"review queue: {queue_path}")
     if report.status == "needs_review":
+        raise typer.Exit(code=2)
+
+
+@app.command()
+def batch(
+    input_dir: Path = typer.Argument(..., exists=True, file_okay=False, readable=True),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir"),
+) -> None:
+    """De-identify every plain-text or JSON transcript in a directory."""
+    transcripts = _discover_transcripts(input_dir)
+    if not transcripts:
+        typer.echo(f"FAILED: no .txt or .json transcripts found in {input_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        settings = Settings.from_env()
+        local_model = LocalModel(settings)
+        model_digest = local_model.model_digest()
+    except (ValueError, RuntimeError, httpx.HTTPError, KeyError) as exc:
+        typer.echo(f"FAILED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    failed = 0
+    needs_review = 0
+    for path in transcripts:
+        try:
+            transcript = load_transcript(path)
+            if not transcript.turns:
+                raise ValueError("the input transcript contains no non-empty turns")
+            run_metadata = RunMetadata(
+                model=settings.model,
+                model_digest=model_digest,
+                pipeline_version=_pipeline_version(),
+                started_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+            output, report = deidentify(
+                transcript,
+                detect_fn=make_detector(local_model.structured),
+                residual_fn=make_residual_detector(local_model.structured),
+                low_confidence_threshold=settings.low_confidence_threshold,
+                run_metadata=run_metadata,
+            )
+            save_outputs(output, report, output_dir)
+        except (ValueError, RuntimeError, httpx.HTTPError, KeyError) as exc:
+            failed += 1
+            typer.echo(f"FAILED {path.name}: {exc}", err=True)
+            continue
+
+        if report.status == "needs_review":
+            needs_review += 1
+        typer.echo(
+            f"{report.transcript_id}: status={report.status}, "
+            f"{len(report.spans)} replacements, {len(report.review_items)} review items"
+        )
+
+    typer.echo(f"batch complete: {len(transcripts)} processed, {needs_review} need review, {failed} failed")
+    if failed:
+        raise typer.Exit(code=1)
+    if needs_review:
         raise typer.Exit(code=2)
 
 

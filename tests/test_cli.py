@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from deidentify_transcripts.cli import app
+from deidentify_transcripts.cli import _discover_transcripts, app
 
 
 def test_init_config_writes_project_server_env(tmp_path):
@@ -38,3 +38,23 @@ def test_init_config_refuses_to_overwrite_without_force(tmp_path):
 
     assert result.exit_code == 1
     assert env_path.read_text(encoding="utf-8") == "existing=true\n"
+
+
+def test_discover_transcripts_filters_and_sorts(tmp_path):
+    (tmp_path / "b.txt").write_text("Speaker: hello\n", encoding="utf-8")
+    (tmp_path / "a.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("ignore me", encoding="utf-8")
+    (tmp_path / "subdir").mkdir()
+
+    found = _discover_transcripts(tmp_path)
+
+    assert found == [tmp_path / "a.json", tmp_path / "b.txt"]
+
+
+def test_batch_fails_when_no_transcripts_found(tmp_path):
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["batch", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "no .txt or .json transcripts found" in result.output
