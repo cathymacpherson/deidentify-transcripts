@@ -25,8 +25,11 @@ def _pipeline_version() -> str:
         return "unknown"
 
 
+_TRANSCRIPT_SUFFIXES = (".txt", ".json", ".xlsx", ".xls")
+
+
 def _discover_transcripts(input_dir: Path) -> list[Path]:
-    return sorted(p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in (".txt", ".json"))
+    return sorted(p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in _TRANSCRIPT_SUFFIXES)
 
 
 @app.command("init-config")
@@ -80,7 +83,7 @@ def run(
     transcript_id: str | None = typer.Option(None, "--id", help="Override the transcript identifier"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir"),
 ) -> None:
-    """De-identify a plain-text or JSON transcript using the configured LLM endpoint."""
+    """De-identify a plain-text, JSON, or Excel transcript using the configured LLM endpoint."""
     try:
         settings = Settings.from_env()
         local_model = LocalModel(settings)
@@ -122,10 +125,13 @@ def batch(
     input_dir: Path = typer.Argument(..., exists=True, file_okay=False, readable=True),
     output_dir: Path = typer.Option(Path("output"), "--output-dir"),
 ) -> None:
-    """De-identify every plain-text or JSON transcript in a directory."""
+    """De-identify every plain-text, JSON, or Excel transcript in a directory."""
     transcripts = _discover_transcripts(input_dir)
     if not transcripts:
-        typer.echo(f"FAILED: no .txt or .json transcripts found in {input_dir}", err=True)
+        typer.echo(
+            f"FAILED: no {', '.join(_TRANSCRIPT_SUFFIXES)} transcripts found in {input_dir}",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     try:

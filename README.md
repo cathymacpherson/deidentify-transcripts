@@ -178,17 +178,17 @@ server. It does not require Tailscale, the project server, or an issued API key.
 
 ## 5. Prepare a transcript
 
-The application accepts plain-text (one turn per line, preferably with a speaker label) and JSON
-transcripts:
+The application accepts plain-text (one turn per line, preferably with a speaker label), JSON, and
+Excel (`.xlsx`/`.xls`, with `Speaker`/`Transcript`/`Start Time`/`Stop Time` columns) transcripts:
 
 ```text
 Interviewer: Could you tell me where you went to school?
 Participant: I attended Oak Park School and my GP is Dr Smith.
 ```
 
-Word documents, PDFs, spreadsheets, subtitle files and paragraph-style transcripts must first be
-converted to one of these two formats. Full parsing rules, the JSON shape, and the included
-synthetic test transcripts are documented in [docs/FORMATS.md](docs/FORMATS.md).
+Word documents, PDFs, subtitle files and paragraph-style transcripts must first be converted to one
+of these formats. Full parsing rules, the JSON and Excel shapes, and the included synthetic test
+transcripts are documented in [docs/FORMATS.md](docs/FORMATS.md).
 
 ## 6. Run de-identification
 
@@ -218,7 +218,8 @@ deidentify-transcripts run transcript.txt --id participant-001 --output-dir outp
 For a real transcript, replace `transcript.txt` with the approved local path to the transcript file.
 Use `--id` to assign the participant/study identifier you want in the output filenames.
 
-To process every `.txt` and `.json` transcript in a folder in one go, use `batch` instead of `run`:
+To process every `.txt`, `.json`, `.xlsx`, and `.xls` transcript in a folder in one go, use `batch`
+instead of `run`:
 
 ```bash
 deidentify-transcripts batch transcripts/ --output-dir output

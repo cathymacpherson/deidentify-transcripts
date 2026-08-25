@@ -30,6 +30,8 @@ class Turn(BaseModel):
     speaker: str = "unknown"
     text: str
     anonymised_text: str = ""
+    start_time: str | None = None
+    stop_time: str | None = None
 
 
 class Transcript(BaseModel):

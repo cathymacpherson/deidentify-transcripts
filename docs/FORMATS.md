@@ -1,6 +1,6 @@
 # Transcript format reference
 
-Full parsing rules for the two accepted transcript formats, and details on the included synthetic
+Full parsing rules for the accepted transcript formats, and details on the included synthetic
 test transcripts. See the main [README](../README.md) for the basic setup and run instructions.
 
 ## Plain text
@@ -65,8 +65,39 @@ To specify an explicit ID:
 deidentify-transcripts run examples/sample-transcript.json --id study-participant-001
 ```
 
-Word documents, PDFs, spreadsheets, subtitle files and paragraph-style transcripts must first be
-converted to one of the two formats above.
+Word documents, PDFs, subtitle files and paragraph-style transcripts must first be converted to
+one of the formats above (or to Excel, below).
+
+## Excel
+
+`.xlsx` and `.xls` files are accepted directly, with one turn per row and a header row using these
+column names (case-insensitive, any column order):
+
+| Start Time | Stop Time | Transcript | Speaker |
+| --- | --- | --- | --- |
+
+Parsing rules:
+
+- Only the first sheet in the workbook is read.
+- `Transcript` and `Speaker` columns are required; `Start Time` and `Stop Time` are optional.
+- A row with a blank `Transcript` cell is skipped.
+- A blank `Speaker` cell is accepted as `unknown`.
+- `Start Time`/`Stop Time` cells formatted as a date, time, or datetime in Excel are converted to
+  their ISO 8601 text form (e.g. `00:00:06`); anything else is kept as the cell's displayed text.
+- Unlike plain-text and JSON turns, `start_time`/`stop_time` are carried through to the anonymised
+  output (only included per turn when present) rather than discarded.
+
+Run against an Excel file the same way as any other format:
+
+```bash
+deidentify-transcripts run transcript.xlsx
+```
+
+Run the included legacy-`.xls` example:
+
+```bash
+deidentify-transcripts run examples/sample-transcript.xls
+```
 
 ## Customizing the parser
 
@@ -82,6 +113,9 @@ means editing the parser itself, in `load_transcript()` in
   support for another field name from a different export tool. `turn.get("speaker", "unknown")` sets
   the default speaker, and `transcript_id` resolution (explicit `--id` → JSON's own `transcript_id` →
   filename) is nearby.
+- Excel: required/optional column names are `_SPREADSHEET_REQUIRED_COLUMNS` and the `cell(row, ...)`
+  lookups in `_load_spreadsheet_transcript()` — add another `cell(row, "column name")` call there to
+  map an additional column.
 - Input `turn_id` values are always discarded and regenerated (`turn_id=index`); change that line to
   preserve source turn IDs instead.
 
@@ -92,10 +126,12 @@ how an existing field is matched.
 
 ## Synthetic test transcripts
 
-Three synthetic example files are included:
+Four synthetic example files are included:
 
 - `examples/sample-transcript.txt`: a small plain-text installation smoke test.
 - `examples/sample-transcript.json`: a preferred-format JSON example.
+- `examples/sample-transcript.xls`: the same content as the plain-text example, in legacy Excel
+  format with `Start Time`/`Stop Time`/`Transcript`/`Speaker` columns.
 - `examples/complex-synthetic-transcript.txt`: a harder model-comparison test containing repeated
   names, case variants, nicknames, clinicians, schools, workplaces, addresses, places, contact
   details, a date and an ID number.

@@ -57,4 +57,4 @@ def test_batch_fails_when_no_transcripts_found(tmp_path):
     result = runner.invoke(app, ["batch", str(tmp_path)])
 
     assert result.exit_code == 1
-    assert "no .txt or .json transcripts found" in result.output
+    assert "no .txt, .json, .xlsx, .xls transcripts found" in result.output
