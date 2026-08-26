@@ -239,7 +239,8 @@ output/
   sensitive/<id>.review-queue.jsonl
 ```
 
-- `anonymised/` contains the speaker and anonymised text, but no raw transcript field.
+- `anonymised/` contains the speaker and anonymised text, but no raw transcript field. Turns from
+  an Excel source also include `start_time`/`stop_time` — see [docs/FORMATS.md](docs/FORMATS.md).
 - `sensitive/` contains original identifiers and must remain in approved encrypted storage. Each
   de-identification report also records the selected model, the Ollama digest when available, the
   pipeline version and the UTC run-start time.
