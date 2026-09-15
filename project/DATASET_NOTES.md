@@ -43,7 +43,7 @@ turns carry no usable gold label, which is ~0.3%):
 | Boundary F1 | **0.826** (vs 0.440 deterministic) |
 | Error rate | 8.8% (1,223 wrong turns in 759 blocks) |
 | Errors at maximum confidence | **32.8%** — the hard ceiling on capture |
-| Error capture at 20% / 30% / 50% flagged | 58.3% / 67.8% / 73.2% |
+| Error capture at 4% / 14% / 25% flagged | 24% / **49%** / 65% (weighted confidence) |
 | Anchored turns | 35.5%, 4.2% error — vs 11.4% for unanchored |
 | Per-file error rate | 1.9% – 16.8% (8.9× spread); worst half carry 68% of error |
 | Per-file triage | rho +0.66 but only 1.3× lift — too weak to act on |
@@ -148,6 +148,45 @@ tuning problem — see the recordings constraint below.
 28% review budget, in per-transcript reports that show each flagged turn in context. Against
 labelling ~83,000 turns from scratch, the reviewer instead works through roughly 4,500 error blocks,
 most of them signposted.
+
+### Weighting disagreement by its strength
+
+An early version discounted every second-opinion disagreement by the same flat amount, which put
+all of them at one confidence value. That made the flag threshold an on/off switch for the second
+opinion rather than a dial — the only way to shorten the list was to discard the whole group.
+
+Scaling the discount by the second opinion's own confidence was measured on 20 transcripts:
+
+| Second opinion's certainty | Turns | Error rate |
+|---|---|---|
+| 0.00 – 0.25 | 766 | 14.0% |
+| 0.25 – 0.50 | 737 | 16.1% |
+| 0.50 – 0.75 | 751 | 18.4% |
+| 0.75 – 0.95 | 811 | 23.1% |
+| 0.95 – 1.00 | 260 | **43.5%** |
+
+A strongly-held disagreement is about three times likelier to mark an error than a weak one, so the
+weighting is worth keeping. Even the weakest band runs at 3.5× the 4.0% rate of fully confident
+turns.
+
+The practical effect is a much more efficient review list: ~14% of turns flagged for ~49% of errors,
+against ~30% of turns for ~53% under the flat scheme — roughly the same capture for half the
+reading. `--flag-threshold` now defaults to **0.75** on that basis.
+
+Resulting confidence gradient:
+
+| Confidence | Turns | Error rate |
+|---|---|---|
+| 0.00 – 0.50 | 266 | 71.4% |
+| 0.50 – 0.65 | 257 | 40.5% |
+| 0.65 – 0.75 | 1,446 | 21.2% |
+| 0.75 – 0.85 | 786 | 13.2% |
+| 0.85 – 0.95 | 762 | 11.9% |
+| 0.95 – 1.00 | 365 | 7.1% |
+| 1.000 | 9,996 | 4.0% |
+
+The ceiling is unchanged: weighting sorts the flagged turns better, it does not reach the 401
+errors sitting at maximum confidence.
 
 **Anyone using this output downstream must be told** the labels are ~91% accurate and that roughly
 a third of the errors carry no warning. That does not follow from the files themselves.

@@ -370,17 +370,22 @@ def label_transcript(
     )
 
 
-#: How much a disagreeing second opinion discounts confidence. Chosen so that a turn with split
-#: votes still ranks as more suspicious than a unanimous turn a second system merely disputes,
-#: matching the measured error rates for each case.
-SECOND_OPINION_PENALTY = 0.85
+#: Strongest discount a fully-confident disagreement can apply. A disagreement the second system
+#: itself barely believes should barely count, so the discount scales with its confidence.
+#:
+#: This value is a judgement, not a measurement. It sets how a strongly-held disagreement ranks
+#: against a split vote, and the two have not been compared against ground truth. Calibrate it
+#: against a scored run (`label-summary --calibration`) before relying on the ordering between
+#: those two kinds of signal.
+SECOND_OPINION_WEIGHT = 0.35
 
 
 def apply_second_opinion(
     votes: Sequence[TurnVotes],
     second_labels: Sequence[str],
+    second_confidence: Sequence[float] | None = None,
     *,
-    penalty: float = SECOND_OPINION_PENALTY,
+    weight: float = SECOND_OPINION_WEIGHT,
 ) -> list[float]:
     """Adjust per-turn confidence using an independent system's labels.
 
@@ -389,15 +394,26 @@ def apply_second_opinion(
     fails on different turns, so disagreement between the two is evidence the LLM's votes cannot
     provide however many times they are taken.
 
+    **The discount scales with how strongly the second system disagrees.** An earlier version
+    applied a flat discount to every disagreement, which put all of them at one value: a reviewer
+    wanting a shorter list could only drop the entire group, making the threshold an on/off switch
+    for the second opinion rather than a dial. Weighting by its confidence spreads them out, so the
+    most suspicious disagreements survive a tighter threshold and the marginal ones fall away
+    first.
+
     The second opinion never changes a label: it is used purely to rank turns for review. A worse
     system overruling a better one would cost accuracy to buy confidence.
     """
     if len(votes) != len(second_labels):
         raise ValueError("need one second-opinion label per turn")
+    strengths = list(second_confidence) if second_confidence is not None else [1.0] * len(votes)
+    if len(strengths) != len(votes):
+        raise ValueError("need one second-opinion confidence per turn")
+
     out = []
-    for vote, other in zip(votes, second_labels):
+    for vote, other, strength in zip(votes, second_labels, strengths):
         confidence = vote.agreement
         if other and vote.winner != "unclear" and other != vote.winner:
-            confidence *= penalty
+            confidence *= 1.0 - weight * max(0.0, min(1.0, strength))
         out.append(confidence)
     return out

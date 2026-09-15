@@ -370,3 +370,49 @@ def tolerated_anomaly_note(record: TranscriptInventory) -> str:
         values = ", ".join(repr(v) for v in sorted(record.merged_values)[:8])
         parts.append(f"{record.merged} merged ({values})")
     return f"{record.total_turns} turns; " + "; ".join(parts)
+
+
+@dataclass(frozen=True)
+class AnomalousTurn:
+    """A turn whose speaker value is neither a role nor a recognised blank."""
+
+    file: str
+    turn_id: int
+    value: str
+    kind: str          # "merged" or "unrecognised"
+    text: str
+
+
+def find_anomalous_turns(
+    paths: list[Path], vocabulary: RoleVocabulary = DEFAULT_VOCABULARY
+) -> list[AnomalousTurn]:
+    """Every turn carrying an out-of-vocabulary speaker value, in file and turn order.
+
+    Turn-level rather than value-level: someone correcting a typo needs to reach the turn, which a
+    count of how often a value occurs does not help with.
+    """
+    found: list[AnomalousTurn] = []
+    for path in sorted(paths):
+        try:
+            transcript = load_transcript(path)
+        except Exception:  # noqa: BLE001 - an unreadable file is the inventory's problem, not this
+            continue
+        for turn in transcript.turns:
+            value = (turn.speaker or "").strip()
+            if not value or value.casefold() in UNLABELLED_VALUES:
+                continue
+            if is_multi_role(value, vocabulary):
+                kind = "merged"
+            elif classify_speaker(value, vocabulary) in (
+                vocabulary.primary_name, vocabulary.secondary_name
+            ):
+                continue
+            else:
+                kind = "unrecognised"
+            found.append(
+                AnomalousTurn(
+                    file=path.name, turn_id=turn.turn_id, value=value,
+                    kind=kind, text=turn.text,
+                )
+            )
+    return found

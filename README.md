@@ -366,14 +366,14 @@ output/
 label it assigned, its confidence, why it was flagged, and the text. Most suspicious first. Use the
 turn id to find the turn in the transcript when you need the surrounding conversation.
 
-Confidence runs from 0 to 1 but only takes a few values, since it is a fraction of votes: `1.000`
-means everything agreed, `0.850` that only the second model objected, `0.667` that the language
-model disagreed with itself, `0.000` that it had no usable answer.
+Confidence runs from 0 to 1. `1.000` means every view agreed and nothing objected; lower values
+mean the model disagreed with itself, the second model objected, or both — and the more strongly
+the second model objected, the lower it goes. `0.000` means no usable answer at all.
 
-`--flag-threshold` sets how long the list is — turns scoring below it are listed. The default
-`0.999` lists everything short of full agreement; `0.8` drops the turns only the second model
-disputed, which is typically a much shorter and higher-yield list. To see what each level is
-actually worth on your data:
+`--flag-threshold` sets how long the list is: turns scoring below it are listed. The default
+`0.75` was chosen by measurement — on the corpus it was tested against, it listed about 14% of
+turns and caught about half the errors. Raise it for a longer list that catches somewhat more;
+lower it for a shorter, denser one. To see what each level is worth on your own data:
 
 ```bash
 deidentify-transcripts label-summary output/labelled/ --calibration <a scored run>.csv

@@ -17,7 +17,12 @@ from .labelling import TurnVotes
 from .schemas import Turn
 
 #: Below this confidence a turn is listed for review.
-FLAG_THRESHOLD = 0.999
+#:
+#: Chosen from measurement, not intuition: on one corpus this listed ~14% of turns and caught ~49%
+#: of errors, against ~30% of turns for ~53% under an earlier, blunter scheme. Raising it towards
+#: 1.0 lists more turns for modest extra capture; lowering it gives a shorter, denser list.
+#: Re-measure on a new corpus with `label-summary --calibration`.
+FLAG_THRESHOLD = 0.75
 
 #: Ordered most error-dense first, from measured error rates per reason.
 REASONS = [

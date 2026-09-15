@@ -240,10 +240,10 @@ class _SecondOpinion:
                 out.append((turns, gold))
         return out
 
-    def labels_for(self, path: Path, turns) -> list[str]:
+    def labels_for(self, path: Path, turns) -> tuple[list[str], list[float]]:
         group = self.by_path.get(path)
         if group is None:
-            return []
+            return [], []
         if group not in self._cache:
             pairs = self._pairs_excluding(group)
             if not pairs:
@@ -253,7 +253,10 @@ class _SecondOpinion:
                     pairs, primary=self.labels[0], secondary=self.labels[1]
                 )
         model = self._cache[group]
-        return list(model.predict(turns).labels) if model is not None else []
+        if model is None:
+            return [], []
+        prediction = model.predict(turns)
+        return list(prediction.labels), list(prediction.confidence)
 
 
 def _no_second_opinion(why: str) -> None:
@@ -287,10 +290,10 @@ def label(
     window: int = typer.Option(40, "--window", min=5),
     step: int = typer.Option(13, "--step", min=1),
     flag_threshold: float = typer.Option(
-        0.999, "--flag-threshold", min=0.0, max=1.0,
+        0.75, "--flag-threshold", min=0.0, max=1.0,
         help=(
-            "Confidence below which a turn is listed for review. Lower it for a shorter, "
-            "higher-yield list (0.8 drops the turns only the second opinion disputed)."
+            "Confidence below which a turn is listed for review. Raise it for a longer list "
+            "that catches more errors; lower it for a shorter, higher-yield one."
         ),
     ),
     primary: str = typer.Option("C", "--primary"),
@@ -370,8 +373,11 @@ def label(
         confidence = list(result.confidence)
         second_labels: list[str] = []
         if second_labeller is not None:
-            second_labels = list(second_labeller.predict(turns).labels)
-            confidence = apply_second_opinion(result.votes, second_labels)
+            prediction = second_labeller.predict(turns)
+            second_labels = list(prediction.labels)
+            confidence = apply_second_opinion(
+                result.votes, second_labels, prediction.confidence
+            )
 
         # Provenance must use the SAME recognition rule as preservation, or a label that was
         # kept (a lowercase "c", say) is reported as though the model produced it.
@@ -423,6 +429,64 @@ def label(
 
     if failed:
         raise typer.Exit(code=1)
+
+
+#: Columns of the per-turn report. Defined once so the header and the rows cannot drift apart —
+#: they did, and a misaligned report reads as "0 errors" rather than failing.
+REPORT_COLUMNS = [
+    "file", "turn_id", "gold", "predicted", "confidence", "second_opinion",
+    "second_conf", "anchor", "anchor_contradicted", "votes", "error", "text",
+]
+
+
+@app.command("second-opinion")
+def second_opinion_inspect(
+    reference_dir: Path = typer.Argument(
+        Path("data/labelled"), exists=True, file_okay=False, readable=True,
+        help="Labelled transcripts to train on",
+    ),
+    top: int = typer.Option(20, "--top", min=1, help="How many weights to show"),
+    primary: str = typer.Option("C", "--primary"),
+    secondary: str = typer.Option("T", "--secondary"),
+) -> None:
+    """Train the second opinion and print what it learned.
+
+    Runs entirely offline. Shows the strongest feature weights and the learned run structure, so
+    its judgement can be inspected rather than taken on trust. Prints feature names and numbers
+    only - no transcript text.
+    """
+    import math
+
+    pairs = []
+    for path in discover_transcripts_recursive(reference_dir):
+        try:
+            turns = load_transcript(path).turns
+        except (ValueError, KeyError, OSError):
+            continue
+        gold = [(t.speaker or "").strip() for t in turns]
+        if any(g in (primary, secondary) for g in gold):
+            pairs.append((turns, gold))
+    if not pairs:
+        typer.echo(f"FAILED: no labelled transcripts in {reference_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    total = sum(len(t) for t, _ in pairs)
+    typer.echo(f"training on {len(pairs)} transcript(s), {total} turns...")
+    labeller = train_labeller(pairs, primary=primary, secondary=secondary)
+
+    typer.echo(f"\nstrongest features (positive favours {secondary}, negative {primary}):")
+    typer.echo(f"  {'weight':>8}  feature")
+    for name, value in labeller.model.top_features(top):
+        typer.echo(f"  {value:>+8.2f}  {name}")
+
+    typer.echo("\nlearned run structure - chance the next turn is the same speaker:")
+    for i, role in enumerate((primary, secondary)):
+        stay = math.exp(labeller.transitions[i][i])
+        typer.echo(f"  after {role}: {stay:.0%} stays with {role}, {1 - stay:.0%} switches")
+    typer.echo(
+        "\nA feature prefixed -1: or +1: is that property of the previous or next turn.\n"
+        "These weights are learned from the labelled transcripts, not written by hand."
+    )
 
 
 @app.command("label-summary")
@@ -526,6 +590,190 @@ def label_summary(
         )
 
 
+@app.command("label-audit")
+def label_audit(
+    report: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True,
+                                  help="A scored run (label-report.csv)"),
+    output: Path = typer.Option(
+        Path("label-audit.csv"), "--output", "-o", help="Where to write the audit list"
+    ),
+    min_confidence: float = typer.Option(
+        0.95, "--min-confidence", min=0.0, max=1.0,
+        help="Only list disagreements the labeller was at least this confident about",
+    ),
+    primary: str = typer.Option("C", "--primary"),
+    secondary: str = typer.Option("T", "--secondary"),
+) -> None:
+    """List turns where the labeller confidently contradicts the human label.
+
+    The opposite question from the review list. That one asks where the model is unsure; this asks
+    where it is sure AND disagrees with a human - which is evidence the *human* label may be wrong.
+
+    Reads a scored report; makes no server calls. Strongest evidence first: cases where the second,
+    independent system also agrees with the labeller against the human.
+    """
+    import csv as _csv
+
+    labels = (primary, secondary)
+    with report.open(encoding="utf-8", newline="") as handle:
+        rows = list(_csv.DictReader(handle))
+    if not rows or "gold" not in rows[0]:
+        typer.echo("FAILED: not a scored report (no gold labels to check against)", err=True)
+        raise typer.Exit(code=1)
+
+    candidates = []
+    for row in rows:
+        if row["gold"] not in labels or row["predicted"] not in labels:
+            continue
+        if row["predicted"] == row["gold"]:
+            continue
+        try:
+            confidence = float(row["confidence"])
+        except (TypeError, ValueError):
+            continue
+        if confidence < min_confidence:
+            continue
+        seconded = row.get("second_opinion") == row["predicted"]
+        candidates.append((seconded, confidence, row))
+
+    # Both systems agreeing against the human is the strongest evidence, so those come first.
+    candidates.sort(key=lambda c: (not c[0], -c[1]))
+
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = _csv.writer(handle)
+        writer.writerow([
+            "file", "turn_id", "human_label", "suggested_label", "confidence",
+            "second_system_agrees", "votes", "text", "verdict",
+        ])
+        for seconded, confidence, row in candidates:
+            writer.writerow([
+                row["file"], row["turn_id"], row["gold"], row["predicted"],
+                f"{confidence:.3f}", "yes" if seconded else "",
+                row.get("votes", ""), row.get("text", ""), "",
+            ])
+
+    scored = sum(1 for r in rows if r["gold"] in labels)
+    both = sum(1 for seconded, _, _ in candidates if seconded)
+    typer.echo(
+        f"{len(candidates)} confident disagreement(s) out of {scored} labelled turns "
+        f"({len(candidates)/max(scored,1):.1%})"
+    )
+    typer.echo(f"  of those, {both} also backed by the second system - check these first")
+    typer.echo(f"\nwritten to {output}")
+    typer.echo(
+        "  The 'verdict' column is blank for your colleague to fill in.\n"
+        "  Contains transcript text - keep it out of version control."
+    )
+    typer.echo(
+        "\nThis finds only label errors the systems happen to catch, so the rate it reveals is a\n"
+        "floor on the true label error rate, not a measurement of it."
+    )
+
+
+@app.command("label-rescore")
+def label_rescore(
+    report: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    output: Path = typer.Option(..., "--output", "-o", help="Where to write the rescored report"),
+    mapping_path: Path = typer.Option(..., "--mapping", help="Identity mapping CSV"),
+    reference_dir: Path = typer.Option(Path("data/labelled"), "--reference"),
+    primary: str = typer.Option("C", "--primary"),
+    secondary: str = typer.Option("T", "--secondary"),
+) -> None:
+    """Recompute the second opinion and confidence from an existing report. No server calls.
+
+    The LLM pass is the expensive part and its output is already in the report: labels, votes and
+    text. The second opinion is cheap and local, so it can be recomputed - to repair a report, or
+    to try a different weighting - without paying for the language model again.
+    """
+    import csv as _csv
+
+    from .labelling import TurnVotes
+    from .schemas import Turn
+
+    with report.open(encoding="utf-8", newline="") as handle:
+        raw = list(_csv.reader(handle))
+    if len(raw) < 2:
+        typer.echo("FAILED: report is empty", err=True)
+        raise typer.Exit(code=1)
+
+    header, body = raw[0], raw[1:]
+    width = len(body[0])
+    if width == len(REPORT_COLUMNS):
+        columns = REPORT_COLUMNS
+    elif width == len(REPORT_COLUMNS) - 1:
+        # A report written before second_conf existed: same columns, that one absent.
+        columns = [c for c in REPORT_COLUMNS if c != "second_conf"]
+        typer.echo("report predates the second_conf column; realigning it")
+    else:
+        typer.echo(
+            f"FAILED: rows have {width} fields; expected "
+            f"{len(REPORT_COLUMNS)} or {len(REPORT_COLUMNS) - 1}", err=True,
+        )
+        raise typer.Exit(code=1)
+    index = {name: i for i, name in enumerate(columns)}
+    rows = [r for r in body if len(r) == width]
+    if len(rows) != len(body):
+        typer.echo(f"skipped {len(body) - len(rows)} row(s) of the wrong length", err=True)
+
+    labels = (primary, secondary)
+    second_opinion = _SecondOpinion(
+        mapping_path, discover_transcripts_recursive(reference_dir), labels
+    )
+
+    by_file: dict[str, list[list[str]]] = {}
+    for row in rows:
+        by_file.setdefault(row[index["file"]], []).append(row)
+
+    reference_paths = {p.name: p for p in discover_transcripts_recursive(reference_dir)}
+    out_rows: list[list[str]] = []
+    rescored = skipped = 0
+    for name, file_rows in by_file.items():
+        path = reference_paths.get(name)
+        turns = [
+            Turn(turn_id=int(r[index["turn_id"]]), text=r[index["text"]]) for r in file_rows
+        ]
+        votes = [
+            TurnVotes(
+                turn_id=int(r[index["turn_id"]]),
+                votes=[v for v in r[index["votes"]].split("|") if v],
+                anchor=r[index["anchor"]] or None,
+            )
+            for r in file_rows
+        ]
+        second_labels, second_conf = (
+            second_opinion.labels_for(path, turns) if path else ([], [])
+        )
+        if second_labels:
+            confidence = apply_second_opinion(votes, second_labels, second_conf)
+            rescored += 1
+        else:
+            confidence = [v.agreement for v in votes]
+            second_labels = [""] * len(votes)
+            second_conf = [None] * len(votes)
+            skipped += 1
+
+        for i, r in enumerate(file_rows):
+            out_rows.append([
+                name, r[index["turn_id"]], r[index["gold"]], r[index["predicted"]],
+                f"{confidence[i]:.3f}", second_labels[i],
+                f"{second_conf[i]:.3f}" if second_conf[i] is not None else "",
+                r[index["anchor"]], r[index["anchor_contradicted"]], r[index["votes"]],
+                r[index["error"]], r[index["text"]],
+            ])
+
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = _csv.writer(handle)
+        writer.writerow(REPORT_COLUMNS)
+        writer.writerows(out_rows)
+
+    typer.echo(
+        f"rescored {rescored} file(s), {len(out_rows)} turns"
+        + (f"; {skipped} file(s) had no second opinion" if skipped else "")
+    )
+    typer.echo(f"written to {output}")
+    typer.echo("  Contains transcript text - keep it out of version control.")
+
+
 @app.command("label-diagnose")
 def label_diagnose(
     report: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
@@ -544,6 +792,28 @@ def label_diagnose(
         typer.echo("FAILED: report is empty", err=True)
         raise typer.Exit(code=1)
 
+    # A shifted column reads as plausible-looking zeros rather than an error, which is worse
+    # than crashing. Check the shape before trusting anything in it.
+    missing = [c for c in ("gold", "predicted", "confidence", "error") if c not in rows[0]]
+    if missing:
+        typer.echo(f"FAILED: report is missing column(s): {', '.join(missing)}", err=True)
+        raise typer.Exit(code=1)
+    if any(r.get(None) for r in rows):
+        typer.echo(
+            "FAILED: some rows have more fields than the header - the report is misaligned "
+            "and its numbers cannot be trusted. Re-run label-eval to regenerate it.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    bad_error = {r["error"] for r in rows} - {"", "WRONG", None}
+    if bad_error:
+        typer.echo(
+            f"FAILED: the 'error' column contains unexpected values ({sorted(bad_error)[:3]}). "
+            "The report is misaligned; re-run label-eval to regenerate it.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     scored = [r for r in rows if r["gold"] in ("C", "T")]
     errors = [r for r in scored if r["error"] == "WRONG"]
     anchored = [r for r in scored if r["anchor"]]
@@ -551,6 +821,13 @@ def label_diagnose(
         f"{len(scored)} scored turns, {len(errors)} wrong ({len(errors)/len(scored):.1%}); "
         f"{len(anchored)} anchored ({len(anchored)/len(scored):.1%})"
     )
+    if not errors and len(scored) > 100:
+        typer.echo(
+            "\nWARNING: no errors at all across a large report. That is far more likely to mean "
+            "a\nmalformed report than a perfect run - check the columns before believing any of "
+            "this.",
+            err=True,
+        )
 
     anchor_err = [r for r in errors if r["anchor"]]
     typer.echo(
@@ -646,12 +923,26 @@ def label_diagnose(
         )
 
     typer.echo("\nconfidence distribution (the ranking signal):")
-    buckets = Counter(r["confidence"] for r in scored)
-    typer.echo(f"  {len(buckets)} distinct confidence value(s)")
-    typer.echo(f"  {'confidence':>10} {'turns':>7} {'wrong':>7} {'error rate':>11}")
-    for value, n in sorted(buckets.items(), key=lambda kv: -float(kv[0])):
-        wrong = sum(1 for r in scored if r["confidence"] == value and r["error"] == "WRONG")
-        typer.echo(f"  {value:>10} {n:>7} {wrong:>7} {wrong/n:>10.1%}")
+    distinct = {r["confidence"] for r in scored}
+    if len(distinct) <= 15:
+        buckets = Counter(r["confidence"] for r in scored)
+        typer.echo(f"  {len(buckets)} distinct confidence value(s)")
+        typer.echo(f"  {'confidence':>10} {'turns':>7} {'wrong':>7} {'error rate':>11}")
+        for value, n in sorted(buckets.items(), key=lambda kv: -float(kv[0])):
+            wrong = sum(1 for r in scored if r["confidence"] == value and r["error"] == "WRONG")
+            typer.echo(f"  {value:>10} {n:>7} {wrong:>7} {wrong/n:>10.1%}")
+    else:
+        # Continuous once disagreement strength is weighted in; bin it to stay readable.
+        edges = [0.0, 0.5, 0.65, 0.75, 0.85, 0.95, 0.999, 1.01]
+        typer.echo(f"  {len(distinct)} distinct values, binned")
+        typer.echo(f"  {'range':>14} {'turns':>7} {'wrong':>7} {'error rate':>11}")
+        for lo, hi in zip(edges, edges[1:]):
+            group = [r for r in scored if lo <= float(r["confidence"]) < hi]
+            if not group:
+                continue
+            wrong = sum(1 for r in group if r["error"] == "WRONG")
+            label = "1.000 (settled)" if lo >= 0.999 else f"{lo:.2f} - {hi:.2f}"
+            typer.echo(f"  {label:>14} {len(group):>7} {wrong:>7} {wrong/len(group):>10.1%}")
 
     top = [r for r in scored if float(r["confidence"]) >= 0.999]
     top_wrong = sum(1 for r in top if r["error"] == "WRONG")
@@ -684,6 +975,37 @@ def label_diagnose(
             f"({len(differ)/len(scored):.0%}) and catches {caught}/{len(errors)} errors "
             f"({caught/max(len(errors),1):.0%})"
         )
+
+        strengths = [r for r in differ if r.get("second_conf")]
+        if strengths:
+            typer.echo(
+                "\n  does a STRONGER disagreement mean a likelier error?"
+            )
+            typer.echo(f"  {'2nd opinion sure':>17} {'turns':>7} {'wrong':>7} {'error rate':>11}")
+            bands = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 0.95), (0.95, 1.01)]
+            rates = []
+            for lo, hi in bands:
+                band = [r for r in strengths if lo <= float(r["second_conf"]) < hi]
+                if not band:
+                    continue
+                wrong = sum(1 for r in band if r["error"] == "WRONG")
+                rates.append(wrong / len(band))
+                typer.echo(
+                    f"  {f'{lo:.2f}-{hi:.2f}':>17} {len(band):>7} {wrong:>7} "
+                    f"{wrong/len(band):>10.1%}"
+                )
+            if len(rates) >= 2:
+                spread = max(rates) - min(rates)
+                if spread >= 0.10:
+                    typer.echo(
+                        f"\n  YES - error rate varies by {spread:.0%} across bands, so weighting "
+                        "by\n  disagreement strength concentrates errors and is worth keeping."
+                    )
+                else:
+                    typer.echo(
+                        f"\n  NO - error rate varies by only {spread:.0%} across bands. "
+                        "Weighting buys\n  little; a flat discount would do the same job."
+                    )
 
 
 @app.command("label-eval")
@@ -767,10 +1089,13 @@ def label_eval(
 
         turn_confidence = list(result.confidence)
         second_labels: list[str] = []
+        second_conf: list[float] = []
         if second_opinion is not None:
-            second_labels = second_opinion.labels_for(path, turns)
+            second_labels, second_conf = second_opinion.labels_for(path, turns)
             if second_labels:
-                turn_confidence = apply_second_opinion(result.votes, second_labels)
+                turn_confidence = apply_second_opinion(
+                    result.votes, second_labels, second_conf
+                )
             else:
                 # Silent degradation otherwise: this file keeps vote-only confidence while the
                 # rest of the run has a second opinion, and the two are not comparable.
@@ -789,6 +1114,7 @@ def label_eval(
                 path.name, str(turn.turn_id), truth, vote.winner,
                 f"{turn_confidence[i]:.3f}",
                 second_labels[i] if second_labels else "",
+                f"{second_conf[i]:.3f}" if second_conf else "",
                 vote.anchor or "",
                 "yes" if vote.contradicts_anchor else "",
                 "|".join(vote.votes),
@@ -852,10 +1178,13 @@ def label_eval(
 
         with output.open("w", encoding="utf-8", newline="") as handle:
             writer = _csv.writer(handle)
-            writer.writerow([
-                "file", "turn_id", "gold", "predicted", "confidence", "second_opinion",
-                "anchor", "anchor_contradicted", "votes", "error", "text",
-            ])
+            writer.writerow(REPORT_COLUMNS)
+            for row in rows:
+                if len(row) != len(REPORT_COLUMNS):
+                    raise RuntimeError(
+                        f"report row has {len(row)} fields, expected {len(REPORT_COLUMNS)} - "
+                        "refusing to write a misaligned report"
+                    )
             writer.writerows(rows)
         typer.echo(f"\nper-turn report: {output}")
         typer.echo("  Contains transcript text - keep it out of version control.")
@@ -1103,6 +1432,10 @@ def speaker_audit(
     manifest: Path | None = typer.Option(
         None, "--manifest", help="Write per-file detail here (contains filenames)"
     ),
+    anomalies: Path | None = typer.Option(
+        None, "--anomalies",
+        help="Write a turn-level list of odd speaker values only - a worklist for fixing them",
+    ),
 ) -> None:
     """Survey every distinct speaker label used across a transcript tree.
 
@@ -1148,6 +1481,33 @@ def speaker_audit(
         )
     else:
         typer.echo("\nNo merged-speaker turns found.")
+
+    if anomalies is not None:
+        import csv as _csv
+
+        from .inventory import find_anomalous_turns
+
+        odd = find_anomalous_turns(paths)
+        with anomalies.open("w", encoding="utf-8", newline="") as handle:
+            writer = _csv.writer(handle)
+            writer.writerow([
+                "file", "turn_id", "speaker_value", "kind", "text", "correction",
+            ])
+            for item in odd:
+                writer.writerow([
+                    item.file, item.turn_id, item.value, item.kind, item.text, "",
+                ])
+        merged = sum(1 for i in odd if i.kind == "merged")
+        typer.echo(
+            f"\n{len(odd)} turn(s) with an odd speaker value "
+            f"({len(odd) - merged} unrecognised, {merged} merged), across "
+            f"{len({i.file for i in odd})} file(s)"
+        )
+        typer.echo(f"anomaly worklist: {anomalies}")
+        typer.echo(
+            "  The 'correction' column is blank to fill in. Contains transcript text - keep it "
+            "out of version control."
+        )
 
     if manifest is not None:
         import csv as _csv
@@ -1221,9 +1581,25 @@ def inventory(
         buckets[record.bucket(threshold, anomaly_tolerance)].append(record)
 
     typer.echo(f"{len(records)} transcripts scanned in {input_dir} (threshold {threshold:.0%})")
+    typer.echo(f"  {'bucket':<10} {'files':>5} {'turns':>8} {'to label':>9}")
     for name in (LABELLED, PARTIAL, UNLABELLED, REVIEW):
         group = buckets[name]
-        typer.echo(f"  {name:<10} {len(group):>4}")
+        turns = sum(r.total_turns for r in group)
+        # Only turns without a role label need the model; the rest are already settled.
+        to_label = sum(r.total_turns - r.role_labelled for r in group)
+        typer.echo(f"  {name:<10} {len(group):>5} {turns:>8} {to_label:>9}")
+
+    work = sum(
+        r.total_turns - r.role_labelled
+        for name in (PARTIAL, UNLABELLED)
+        for r in buckets[name]
+    )
+    if work:
+        typer.echo(
+            f"\n{work} turn(s) need labelling. At the ~0.45s per turn measured on one "
+            f"corpus\nthat is roughly {work * 0.45 / 3600:.1f} hours - time your own first "
+            "transcript to calibrate."
+        )
     errors = [r for r in records if r.error is not None]
     unknown_vocab = [
         r for r in buckets[REVIEW] if r.error is None and r.unrecognised_rate > anomaly_tolerance

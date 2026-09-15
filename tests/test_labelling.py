@@ -299,7 +299,7 @@ def test_label_eval_writes_a_per_turn_report(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     lines = report.read_text(encoding="utf-8").splitlines()
     assert lines[0].startswith(
-        "file,turn_id,gold,predicted,confidence,second_opinion,anchor"
+        "file,turn_id,gold,predicted,confidence,second_opinion,second_conf,anchor"
     )
     assert len(lines) == 61
     # The contradicted anchor must be visible and no longer at full confidence.
@@ -326,14 +326,43 @@ def test_second_opinion_never_changes_the_label():
     assert votes[0].winner == "C"  # unchanged
 
 
-def test_split_votes_still_outrank_mere_disagreement():
-    # A turn whose windows split is more suspicious than a unanimous one a weaker system disputes.
+def test_split_votes_still_outrank_a_weakly_held_disagreement():
     from deidentify_transcripts.labelling import apply_second_opinion
 
     split = TurnVotes(turn_id=0, votes=["C", "C", "T"])
     unanimous = TurnVotes(turn_id=1, votes=["C", "C", "C"])
-    confidences = apply_second_opinion([split, unanimous], ["C", "T"])
+    # The second system disputes the unanimous turn, but is barely sure of itself.
+    confidences = apply_second_opinion([split, unanimous], ["C", "T"], [1.0, 0.1])
     assert confidences[0] < confidences[1]
+
+
+def test_disagreement_strength_spreads_turns_across_the_range():
+    """The whole point: a flat discount put every disagreement at one value."""
+    from deidentify_transcripts.labelling import apply_second_opinion
+
+    votes = [TurnVotes(turn_id=i, votes=["C", "C", "C"]) for i in range(3)]
+    out = apply_second_opinion(votes, ["T", "T", "T"], [1.0, 0.5, 0.05])
+    assert out[0] < out[1] < out[2]          # strongest disagreement is most suspicious
+    assert out[2] > 0.95                     # a barely-held one hardly counts
+    assert len(set(out)) == 3                # and they no longer collapse together
+
+
+def test_a_strongly_held_disagreement_ranks_alongside_a_split_vote():
+    """Whether it should outrank one is unmeasured - see SECOND_OPINION_WEIGHT."""
+    from deidentify_transcripts.labelling import apply_second_opinion
+
+    split = TurnVotes(turn_id=0, votes=["C", "C", "C", "T"])      # 3 of 4 agree
+    unanimous = TurnVotes(turn_id=1, votes=["C", "C", "C"])        # all agree, but disputed
+    out = apply_second_opinion([split, unanimous], ["C", "T"], [1.0, 1.0])
+    assert out[0] == 0.75
+    assert 0.6 < out[1] < 0.8      # lands in the same region, not in a bucket of its own
+
+
+def test_second_opinion_confidence_length_is_checked():
+    from deidentify_transcripts.labelling import apply_second_opinion
+
+    with pytest.raises(ValueError, match="one second-opinion confidence per turn"):
+        apply_second_opinion([TurnVotes(turn_id=0, votes=["C"])], ["C"], [1.0, 1.0])
 
 
 def test_both_signals_compound():

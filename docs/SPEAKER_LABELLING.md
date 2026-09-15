@@ -100,47 +100,44 @@ do poorly.
 
 #### What the confidence number means
 
-Confidence is **not continuous**. It is a fraction of votes, so it takes about eight discrete
-values — which is why a summary of it produces neat rows rather than a spread.
+Confidence combines two things: how much the windows agreed with each other, and how strongly the
+second opinion disagreed with the result.
 
-Each turn is seen by three or four windows, so agreement can only be 3/3, 2/3, 4/4, 3/4 and so on.
-That figure is then multiplied by 0.85 where the second opinion disagrees.
+- **Window agreement** is a fraction of votes — 3/3, 2/3, 3/4 and so on — since each turn is seen by
+  three or four windows.
+- **A disagreeing second opinion** discounts that figure, **scaled by its own confidence**. A
+  disagreement the second system barely believes counts for little; one it is certain of counts for
+  much more.
 
-| Value | How it arises |
-|---|---|
-| 1.000 | Every view agreed, and the second opinion agreed too — or the turn was labelled by hand |
-| 0.850 | Every view agreed, but the second opinion disagreed |
-| 0.750 | 3 of 4 views agreed |
-| 0.667 | 2 of 3 views agreed |
-| 0.637 | 3 of 4 agreed, and the second opinion disagreed |
-| 0.567 | 2 of 3 agreed, and the second opinion disagreed |
-| 0.000 | No usable view, or a label kept verbatim for a human to confirm |
+So a turn every window agreed on, with no objection, scores 1.0. One the windows split on *and* the
+second opinion confidently disputes scores lowest.
 
-The number has no meaning as a probability. It is a **rank**: turns with lower values were wrong
-more often when measured. How much more often is a property of the corpus — measure it with
+The number is not a probability. It is a **rank**: turns with lower values were wrong more often
+when measured. How much more is a property of the corpus — measure it with
 `label-summary --calibration` rather than assuming.
+
+**Why the discount is weighted rather than flat.** An earlier version applied the same discount to
+every disagreement, putting them all at one value. A reviewer wanting a shorter list could then only
+drop the entire group, which made the threshold an on/off switch for the second opinion rather than
+a dial. Weighting spreads them out, so a tighter threshold keeps the disagreements worth having.
+Measured on one corpus, the strongest disagreements marked errors about three times as often as the
+weakest.
 
 #### Choosing the flag threshold
 
-`label --flag-threshold` sets the value below which a turn is listed for review. Because confidence
-is discrete, **only a few thresholds change anything** — anything between two adjacent values gives
-an identical result:
+`label --flag-threshold` sets the value below which a turn is listed for review. It is a display
+choice, not a labelling one: confidence is stored per turn either way, so changing it alters which
+turns are listed and nothing else.
 
-| Threshold | Lists |
-|---|---|
-| `0.999` (default) | everything except perfect agreement |
-| `0.8` | drops turns only the second opinion disputed |
-| `0.7` | also drops 3-of-4 agreement |
-| `0.6` | only the least confident turns |
-
-It is a display choice, not a labelling one. Confidence is stored per turn either way, so a
-different threshold changes which turns are listed and nothing else.
+The default is **0.75**, chosen from measurement rather than intuition — on one corpus that listed
+about 14% of turns and caught about half the errors. Raise it towards 1.0 for a longer list with
+modestly better capture; lower it for a shorter, denser one.
 
 **A longer list is not automatically better.** Where a quarter of every transcript is flagged, the
 flag stops commanding attention — a reviewer who meets seven correct turns in a row begins skimming
 the flags too. A short list that is right about half the time is worth more than a long one that is
 right one time in five. `label-summary --calibration` gives the yield at each level, which is the
-basis for choosing.
+basis for choosing on a new corpus.
 
 #### The two labellers
 

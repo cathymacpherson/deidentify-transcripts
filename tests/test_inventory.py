@@ -409,3 +409,64 @@ def test_speaker_audit_accepts_several_directories(tmp_path):
     text = manifest.read_text(encoding="utf-8")
     assert "a.json" in text and "b.json" in text
     assert "c.json" not in text  # unlabelled/ was not asked for
+
+
+def test_find_anomalous_turns_is_turn_level(tmp_path):
+    from deidentify_transcripts.inventory import find_anomalous_turns
+
+    write_json(tmp_path / "a.json", ["C", "T", "CC", "unknown", "C/T", "c", ""])
+    found = find_anomalous_turns(sorted(tmp_path.glob("*.json")))
+
+    assert [(f.turn_id, f.value, f.kind) for f in found] == [
+        (2, "CC", "unrecognised"),
+        (4, "C/T", "merged"),
+    ]
+    # Valid roles in any case, and recognised blanks, are not anomalies.
+    assert all(f.value not in ("C", "T", "c", "unknown", "") for f in found)
+
+
+def test_find_anomalous_turns_skips_unreadable_files(tmp_path):
+    from deidentify_transcripts.inventory import find_anomalous_turns
+
+    write_json(tmp_path / "good.json", ["X"])
+    (tmp_path / "bad.json").write_text("{oops", encoding="utf-8")
+    found = find_anomalous_turns(sorted(tmp_path.glob("*.json")))
+    assert len(found) == 1
+    assert found[0].value == "X"
+
+
+def test_speaker_audit_writes_an_anomaly_worklist(tmp_path):
+    write_json(tmp_path / "a.json", ["C"] * 10 + ["CC", "C/T"])
+    write_json(tmp_path / "b.json", ["T"] * 5)
+    out = tmp_path / "anomalies.csv"
+
+    result = runner.invoke(app, ["speaker-audit", str(tmp_path), "--anomalies", str(out)])
+
+    assert result.exit_code == 0
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "file,turn_id,speaker_value,kind,text,correction"
+    assert len(lines) == 3          # header plus two anomalies; b.json contributes none
+    assert "2 turn(s) with an odd speaker value" in result.stdout
+    assert "1 unrecognised, 1 merged" in result.stdout
+
+
+def test_inventory_reports_turns_and_estimated_work(tmp_path):
+    write_json(tmp_path / "done.json", ["C", "T"] * 50)          # 100 turns, all labelled
+    write_json(tmp_path / "blank.json", ["unknown"] * 200)        # 200 to label
+    write_json(tmp_path / "part.json", ["C", "T"] + ["unknown"] * 98)  # 98 to label
+
+    result = runner.invoke(app, ["inventory", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "turns" in result.stdout and "to label" in result.stdout
+    assert "298 turn(s) need labelling" in result.stdout
+    assert "hours" in result.stdout
+
+
+def test_inventory_says_nothing_about_time_when_there_is_no_work(tmp_path):
+    write_json(tmp_path / "done.json", ["C", "T"] * 50)
+
+    result = runner.invoke(app, ["inventory", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "need labelling" not in result.stdout

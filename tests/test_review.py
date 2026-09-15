@@ -45,9 +45,10 @@ def test_items_are_ordered_most_suspicious_first():
         TurnVotes(turn_id=2, votes=[]),                # no view at all
         TurnVotes(turn_id=3, votes=["C", "C", "T"]),   # disagreed with itself
     ]
+    # An explicit threshold: this test is about ordering, not about the default cut-off.
     review = build_review(
         "demo", t, ["C", "unclear", "unclear", "C"], v,
-        [0.85, 0.5, 0.0, 0.667], ["T", "C", "C", "C"],
+        [0.85, 0.5, 0.0, 0.667], ["T", "C", "C", "C"], threshold=0.999,
     )
     reasons = [i["reason"] for i in review["items"]]
     assert reasons[0] == "no view of this turn"
@@ -419,3 +420,16 @@ def test_flag_threshold_controls_how_long_the_review_list_is(tmp_path, monkeypat
     loose = run(0.999, tmp_path / "loose")
     tight = run(0.5, tmp_path / "tight")
     assert tight["turns_flagged"] <= loose["turns_flagged"]
+
+
+def test_default_threshold_excludes_weakly_disputed_turns():
+    """0.75 is a measured operating point: a turn only weakly disputed is not worth listing."""
+    from deidentify_transcripts.review import FLAG_THRESHOLD
+
+    assert FLAG_THRESHOLD == 0.75
+    t = turns(3)
+    v = [TurnVotes(turn_id=i, votes=["C", "C", "C"]) for i in range(3)]
+    # 0.96 = barely disputed, 0.80 = moderately, 0.66 = strongly.
+    review = build_review("demo", t, ["C"] * 3, v, [0.96, 0.80, 0.66])
+    listed = {item["turn_id"] for item in review["items"]}
+    assert listed == {2}

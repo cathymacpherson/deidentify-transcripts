@@ -20,3 +20,6 @@ issues.csv
 
 # Per-turn label reports — contain transcript text
 label-report*.csv
+
+label-audit*.csv
+anomalies*.csv
