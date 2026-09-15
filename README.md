@@ -1,24 +1,38 @@
-# Transcript Deidentification
+# Transcript De-identification and Speaker Labelling
 
-De-identify interview or therapy transcripts using:
+Two functions for preparing interview and therapy transcripts for research use. They share one
+installation, one configuration, and one inference server, and can be used independently.
 
-1. deterministic patterns for email addresses, URLs, phone numbers, numeric and written dates (for
-   example `March 2020` or `15th of April`), social media handles and long ID numbers;
-2. a local language model for contextual identifiers such as names, schools,
-   organisations, occupations, addresses and places;
-3. stable placeholders such as `[NAME_1]` and `[SCHOOL_1]`;
-4. an independent second local model pass that auto-corrects any residual identifier it confirms,
-   plus a human-review queue for anything it can't confirm with confidence.
+**De-identify** — replace names, places, schools, contact details and other identifiers with stable
+placeholders such as `[NAME_1]`, using deterministic patterns for structured identifiers, a
+language model for contextual ones, and a second model pass that checks the result.
 
-The default project setup sends transcript text to a secure Macquarie University-managed vLLM server.
-That server exposes an OpenAI-compatible API and is intended for project researchers. Collaborators
-reach it directly over Tailscale, using the server's tailnet IP address — access is being granted for
-a limited time while this setup is tested. The application itself still runs on your own computer,
-and transcripts leave your device only to reach that approved server. A fully local Ollama setup is
-also available for testing or offline use.
+**Label speakers** — assign a role to each turn (`C` = client, `T` = therapist) in transcripts that
+have not been coded by hand, with a confidence per turn and a report naming the turns most worth a
+human's attention.
 
-> De-identification reduces risk; it does not prove that a transcript is anonymous. Please validate this
-> workflow against human review.
+> Neither function replaces human review. De-identification reduces risk; it does not prove that a
+> transcript is anonymous. Speaker labels are roughly 91% accurate on held-out data, and about a
+> third of the errors carry no warning. Validate both against human review.
+
+## How this repository is organised
+
+The repository is a **general-purpose tool** first. Everything outside `project/` works for any
+transcript corpus and makes no assumptions about a particular dataset:
+
+| | |
+|---|---|
+| `src/`, `tests/` | The application |
+| [docs/FORMATS.md](docs/FORMATS.md) | Accepted transcript formats |
+| [docs/SPEAKER_LABELLING.md](docs/SPEAKER_LABELLING.md) | Speaker-labelling design and evaluation methodology |
+| [docs/LOCAL_OLLAMA.md](docs/LOCAL_OLLAMA.md) | Local-only fallback |
+
+`project/` holds material specific to **one dataset** — measured statistics, label conventions found
+in that data, evaluation split design. It is secondary: `src/` never imports from it, no general
+document depends on it, and the tool runs without it. See [project/README.md](project/README.md).
+
+The institutional inference server described below is part of the general offering, not of any one
+project: it is shared infrastructure available to anyone using this repository.
 
 ## What you'll need
 
@@ -190,7 +204,12 @@ Word documents, PDFs, subtitle files and paragraph-style transcripts must first 
 of these formats. Full parsing rules, the JSON and Excel shapes, and the included synthetic test
 transcripts are documented in [docs/FORMATS.md](docs/FORMATS.md).
 
-## 6. Run de-identification
+## De-identify a transcript
+
+Replaces identifiers with stable placeholders and produces a report of what was changed, plus a
+queue of anything needing a human decision.
+
+### Running de-identification
 
 Make sure Tailscale is still connected (see [step 1](#1-connect-to-the-project-server)) before
 running the commands below.
@@ -247,7 +266,7 @@ output/
 - An exit code of `2` means the run completed but human review is required — specifically, a
   stage-1 detection the model wasn't confident about. This is common and does not mean the software
   crashed. It does not fire for a residual identifier the second pass independently confirmed and
-  auto-corrected; see [7. Review the results](#7-review-the-results).
+  auto-corrected; see [Reviewing the de-identified output](#reviewing-the-de-identified-output).
 - Running the same transcript ID again overwrites that ID's previous output files. Use another
   `--output-dir` or copy the previous files when comparing models.
 
@@ -264,7 +283,7 @@ Example anonymised text:
 [NAME_1] attended [SCHOOL_1]. Call [PHONE_1].
 ```
 
-## 7. Review the results
+### Reviewing the de-identified output
 
 Always inspect:
 
@@ -293,6 +312,61 @@ The automated status `clean` means only that no low-confidence detections were l
 not that the second pass found nothing (it may have auto-corrected something) and not a
 certification of anonymity.
 
+## Label speakers
+
+Assigns `C` (client) or `T` (therapist) to each turn. Make sure Tailscale is connected first — this
+uses the same server as de-identification.
+
+### Sorting transcripts first
+
+Different transcripts need different handling, so start by seeing what labels you already have:
+
+```bash
+deidentify-transcripts inventory data/            # dry run: counts only
+deidentify-transcripts inventory data/ --apply    # sort into labelled/ partial/ unlabelled/ review/
+```
+
+- `labelled/` — already coded; nothing to do
+- `partial/` — some turns coded: the labeller fills the gaps and keeps every human label
+- `unlabelled/` — needs labelling from scratch
+- `review/` — a human decides (unrecognised speaker values, or an unreadable file)
+
+### Running the labeller
+
+```bash
+deidentify-transcripts label data/unlabelled
+deidentify-transcripts label data/partial
+```
+
+Add `--mapping <identity.csv>` if you have a file mapping each participant to their clinician. It
+enables a second, independent labeller as a cross-check, which improves the confidence estimates
+substantially — see [docs/SPEAKER_LABELLING.md](docs/SPEAKER_LABELLING.md).
+
+Expect roughly five minutes per thousand turns.
+
+Outputs:
+
+```text
+output/
+  labelled/<id>.json        speaker, confidence and provenance per turn
+  review/<id>.review.md     turns worth checking, in context, highest priority first
+```
+
+### Reviewing the labels
+
+Open the review report. It groups flagged turns by why they were flagged, shows each with the
+surrounding conversation, and puts the most error-dense reasons first.
+
+**It is a priority list, not a filter.** About a third of errors sit in turns the system was
+confident about, so they will not appear in the report. Read the whole transcript; the report tells
+you where to look hardest.
+
+Turns you have already coded by hand are never overwritten, and never appear in the report. Labels
+the tool does not recognise — a merged `C/T` mark, or a local convention — are kept exactly as
+written and raised at the top of the report for you to confirm.
+
+Full design, methodology and measured accuracy:
+[docs/SPEAKER_LABELLING.md](docs/SPEAKER_LABELLING.md).
 
 ## Development
 

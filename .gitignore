@@ -5,4 +5,18 @@ __pycache__/
 *.py[cod]
 output/
 data/
+CLAUDE.md
+.DS_STORE
+report*
 
+
+# Identity linkage / label mapping files — never commit
+therapist_labels.csv*
+
+# Inventory/audit manifests — contain transcript filenames
+audit.csv
+issues.csv
+*.manifest.csv
+
+# Per-turn label reports — contain transcript text
+label-report*.csv
