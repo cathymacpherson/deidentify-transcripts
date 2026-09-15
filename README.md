@@ -338,24 +338,33 @@ deidentify-transcripts label data/unlabelled
 deidentify-transcripts label data/partial
 ```
 
-Add `--mapping <identity.csv>` if you have a file mapping each participant to their clinician. It
-enables a second, independent labeller as a cross-check, which improves the confidence estimates
-substantially — see [docs/SPEAKER_LABELLING.md](docs/SPEAKER_LABELLING.md).
-
 Expect roughly five minutes per thousand turns.
+
+Two systems label each transcript. The language model on the server assigns every label. A second,
+much simpler model runs on your own machine — it counts word patterns rather than reading the
+conversation, is far less accurate, and never changes a label. It is there only to **disagree**:
+because it works a different way, it is wrong about different turns, and the turns the two dispute
+are the ones most worth checking.
+
+**The second model is optional.** It learns from transcripts that have already been checked by
+hand, so a project with none simply runs without it — labelling works and accuracy is unaffected,
+only the confidence estimates are weaker. It uses `data/labelled` by default; point `--reference`
+somewhere else, or pass `--reference none` to skip it deliberately. Once a few transcripts have
+been reviewed, pointing `--reference` at them improves every subsequent run.
 
 Outputs:
 
 ```text
 output/
   labelled/<id>.json        speaker, confidence and provenance per turn
-  review/<id>.review.md     turns worth checking, in context, highest priority first
+  review/<id>.review.json   turns worth checking, most suspicious first
 ```
 
 ### Reviewing the labels
 
-Open the review report. It groups flagged turns by why they were flagged, shows each with the
-surrounding conversation, and puts the most error-dense reasons first.
+`output/review/<id>.review.json` lists only the turns the labeller was unsure about — turn id, the
+label it assigned, its confidence, why it was flagged, and the text. Most suspicious first. Use the
+turn id to find the turn in the transcript when you need the surrounding conversation.
 
 **It is a priority list, not a filter.** About a third of errors sit in turns the system was
 confident about, so they will not appear in the report. Read the whole transcript; the report tells

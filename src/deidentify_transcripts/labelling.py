@@ -264,17 +264,35 @@ def window_pass(
 
 
 def existing_labels(turns: Sequence[Turn], roles: Sequence[str]) -> dict[int, str]:
-    """Manual role labels already on the transcript, as turn_id -> label.
+    """Manual role labels already on the transcript, as turn_id -> canonical label.
 
     These are human judgements and are treated as fact: never overwritten, and used as anchors,
     which is strictly better than anchors the model guesses at. A partially coded transcript is
     therefore the *easiest* case, not an awkward one.
+
+    Recognition is delegated to ``inventory.classify_speaker`` so there is ONE definition of what
+    counts as a role label across the codebase. An earlier version matched exactly against
+    ``("C", "T")`` and silently failed on a lowercase ``c``, treating a human's label as an
+    unrecognised value.
+
+    The canonical spelling is returned, so a transcript coded with mixed case comes out
+    consistent. That is a change of spelling, not of judgement — unlike a mistyped or unrecognised
+    label, which is preserved exactly by ``preserved_labels``.
     """
-    return {
-        turn.turn_id: (turn.speaker or "").strip()
-        for turn in turns
-        if (turn.speaker or "").strip() in roles
-    }
+    from .inventory import DEFAULT_VOCABULARY, classify_speaker
+
+    primary, secondary = roles[0], roles[1]
+    found: dict[int, str] = {}
+    for turn in turns:
+        value = (turn.speaker or "").strip()
+        if not value:
+            continue
+        kind = classify_speaker(value, DEFAULT_VOCABULARY)
+        if kind == DEFAULT_VOCABULARY.primary_name:
+            found[turn.turn_id] = primary
+        elif kind == DEFAULT_VOCABULARY.secondary_name:
+            found[turn.turn_id] = secondary
+    return found
 
 
 def preserved_labels(turns: Sequence[Turn], roles: Sequence[str]) -> dict[int, str]:
@@ -285,12 +303,18 @@ def preserved_labels(turns: Sequence[Turn], roles: Sequence[str]) -> dict[int, s
     silently resolves something a human may have marked as unresolvable. They are kept exactly as
     written and flagged for review instead.
     """
-    from .inventory import UNLABELLED_VALUES
+    from .inventory import DEFAULT_VOCABULARY, UNLABELLED_VALUES, classify_speaker
 
     out = {}
     for turn in turns:
         value = (turn.speaker or "").strip()
-        if not value or value in roles or value.casefold() in UNLABELLED_VALUES:
+        if not value or value.casefold() in UNLABELLED_VALUES:
+            continue
+        # Same recognition rule as existing_labels: anything it accepts as a role is not
+        # "unrecognised", whatever its spelling.
+        if classify_speaker(value, DEFAULT_VOCABULARY) in (
+            DEFAULT_VOCABULARY.primary_name, DEFAULT_VOCABULARY.secondary_name
+        ):
             continue
         out[turn.turn_id] = value
     return out

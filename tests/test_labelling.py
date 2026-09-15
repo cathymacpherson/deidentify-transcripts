@@ -631,3 +631,44 @@ def test_evaluation_mode_preserves_nothing():
     result = label_transcript(turns, StubModel(), model, size=2, step=1, use_existing=False)
     assert result.labels[0] == "C"
     assert result.preserved_count == 0
+
+
+def test_role_labels_are_recognised_whatever_their_case():
+    """A lowercase 'c' is a client label, not an unrecognised value."""
+    from deidentify_transcripts.labelling import existing_labels, preserved_labels
+
+    turns = [
+        Turn(turn_id=0, speaker="c", text="a"),
+        Turn(turn_id=1, speaker="T", text="b"),
+        Turn(turn_id=2, speaker=" t ", text="c"),
+        Turn(turn_id=3, speaker="Client", text="d"),
+        Turn(turn_id=4, speaker="THERAPIST", text="e"),
+        Turn(turn_id=5, speaker="unknown", text="f"),
+    ]
+    assert existing_labels(turns, ("C", "T")) == {0: "C", 1: "T", 2: "T", 3: "C", 4: "T"}
+    assert preserved_labels(turns, ("C", "T")) == {}
+
+
+def test_lowercase_labels_are_kept_as_anchors_not_flagged():
+    turns = [
+        Turn(turn_id=0, speaker="c", text="a"),
+        Turn(turn_id=1, speaker="unknown", text="b"),
+    ]
+    model = StubModel(window_labeller=lambda ids: {i: "T" for i in ids})
+    result = label_transcript(turns, StubModel(), model, size=2, step=1)
+
+    assert result.labels[0] == "C"        # canonical spelling, model's "T" ignored
+    assert result.confidence[0] == 1.0    # settled, not flagged
+    assert result.manual_count == 1
+    assert result.preserved_count == 0
+
+
+def test_genuinely_unrecognised_labels_are_still_preserved():
+    from deidentify_transcripts.labelling import preserved_labels
+
+    turns = [
+        Turn(turn_id=0, speaker="CC", text="a"),
+        Turn(turn_id=1, speaker="X", text="b"),
+        Turn(turn_id=2, speaker="C/T", text="c"),
+    ]
+    assert preserved_labels(turns, ("C", "T")) == {0: "CC", 1: "X", 2: "C/T"}

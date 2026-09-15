@@ -12,7 +12,7 @@ from .config import Settings, env_template
 from .detect import make_detector
 from .gate import make_residual_detector
 from .labelling import apply_second_opinion, label_transcript
-from .review import render_report
+from .review import build_review
 from .inventory import (
     DEFAULT_ANOMALY_TOLERANCE,
     DEFAULT_THRESHOLD,
@@ -256,18 +256,33 @@ class _SecondOpinion:
         return list(model.predict(turns).labels) if model is not None else []
 
 
+def _no_second_opinion(why: str) -> None:
+    """Explain what running without a second opinion means, without implying a fault.
+
+    A corpus with no labelled transcripts is a supported case, not a misconfiguration - it is the
+    situation any new project starts in.
+    """
+    typer.echo(f"Running without a second opinion ({why}).")
+    typer.echo(
+        "  This is fine - labelling works, and accuracy is unaffected. Only the confidence\n"
+        "  estimates are weaker: they come from the model disagreeing with itself, which\n"
+        "  catches turns it is unsure about but not ones it is consistently wrong about.\n"
+        "  Expect the review list to flag roughly half as many of the actual errors.\n"
+        "  Once some transcripts have been checked by hand, point --reference at them."
+    )
+
+
 @app.command("label")
 def label(
     input_path: Path = typer.Argument(..., exists=True, readable=True,
                                       help="A transcript file, or a directory of them"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir"),
-    mapping_path: Path | None = typer.Option(
-        None, "--mapping",
-        help="Identity mapping. Adds the trained model as an independent second opinion.",
-    ),
-    reference_dir: Path = typer.Option(
+    reference_dir: Path | None = typer.Option(
         Path("data/labelled"), "--reference",
-        help="Labelled transcripts used to train the second opinion",
+        help=(
+            "Optional. Labelled transcripts to train the second opinion on. "
+            "Omit or pass 'none' if you have none - the labeller works without it."
+        ),
     ),
     window: int = typer.Option(40, "--window", min=5),
     step: int = typer.Option(13, "--step", min=1),
@@ -292,13 +307,38 @@ def label(
         typer.echo(f"FAILED: no transcripts found at {input_path}", err=True)
         raise typer.Exit(code=1)
 
-    second_opinion = None
-    if mapping_path is not None:
-        try:
-            reference = discover_transcripts_recursive(reference_dir)
-            second_opinion = _SecondOpinion(mapping_path, reference, labels)
-        except (ValueError, OSError) as exc:
-            typer.echo(f"WARNING: second opinion unavailable: {exc}", err=True)
+    # The second opinion is trained once over every labelled transcript available. Unlike
+    # evaluation, there are no gold labels here to leak, so no per-speaker exclusion is needed -
+    # and more training data makes the second opinion better.
+    second_labeller = None
+    if reference_dir is not None and str(reference_dir).lower() != "none":
+        if not reference_dir.exists():
+            _no_second_opinion(f"no labelled transcripts at {reference_dir}")
+        else:
+            pairs = []
+            for ref in discover_transcripts_recursive(reference_dir):
+                try:
+                    ref_turns = load_transcript(ref).turns
+                except (ValueError, KeyError, OSError):
+                    continue
+                gold = [(t.speaker or "").strip() for t in ref_turns]
+                if any(g in labels for g in gold):
+                    pairs.append((ref_turns, gold))
+            if pairs:
+                # A few seconds even on a large corpus, so it is redone every run rather than
+                # cached: nothing to go stale, and newly labelled transcripts are picked up
+                # automatically.
+                began = datetime.now(timezone.utc)
+                second_labeller = train_labeller(
+                    pairs, primary=primary, secondary=secondary
+                )
+                took = (datetime.now(timezone.utc) - began).total_seconds()
+                typer.echo(
+                    f"second opinion trained on {len(pairs)} labelled transcript(s) "
+                    f"in {took:.0f}s"
+                )
+            else:
+                _no_second_opinion(f"nothing in {reference_dir} carries manual labels")
 
     labelled_dir = output_dir / "labelled"
     review_dir = output_dir / "review"
@@ -322,10 +362,9 @@ def label(
 
         confidence = list(result.confidence)
         second_labels: list[str] = []
-        if second_opinion is not None:
-            second_labels = second_opinion.labels_for(path, turns)
-            if second_labels:
-                confidence = apply_second_opinion(result.votes, second_labels)
+        if second_labeller is not None:
+            second_labels = list(second_labeller.predict(turns).labels)
+            confidence = apply_second_opinion(result.votes, second_labels)
 
         # label_transcript already preserves manual labels; record where each came from.
         sources = [
@@ -351,16 +390,22 @@ def label(
             }, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        report_path = review_dir / f"{transcript.transcript_id}.review.md"
+        report_path = review_dir / f"{transcript.transcript_id}.review.json"
         report_path.write_text(
-            render_report(
-                transcript.transcript_id, turns, result.labels,
-                result.votes, confidence, second_labels or None,
+            json.dumps(
+                build_review(
+                    transcript.transcript_id, turns, result.labels,
+                    result.votes, confidence, second_labels or None,
+                ),
+                indent=2, ensure_ascii=False,
             ),
             encoding="utf-8",
         )
         flagged = sum(1 for c in confidence if c < 0.999)
-        kept = f", {result.manual_count} manual kept" if result.manual_count else ""
+        kept = (
+            f", {result.manual_count} manual kept" if result.manual_count
+            else ", no existing labels found"
+        )
         typer.echo(
             f"{transcript.transcript_id}: {len(turns)} turns{kept}, {flagged} flagged "
             f"({flagged/len(turns):.0%}), coverage {result.coverage:.0%} -> {report_path}"
@@ -368,6 +413,70 @@ def label(
 
     if failed:
         raise typer.Exit(code=1)
+
+
+@app.command("label-summary")
+def label_summary(
+    target: Path = typer.Argument(
+        Path("output/labelled"), exists=True, readable=True,
+        help="A labelled transcript, or the directory of them",
+    ),
+) -> None:
+    """Summarise labelled output: how many turns were flagged, and why.
+
+    Reads the files locally and prints counts only - no transcript text. Use it to reconcile a
+    review list against its transcript, or to see the shape of a run.
+    """
+    from collections import Counter
+
+    paths = (
+        [target] if target.is_file()
+        else sorted(p for p in target.rglob("*.json") if not p.name.endswith(".review.json"))
+    )
+    if not paths:
+        typer.echo(f"FAILED: no labelled transcripts found at {target}", err=True)
+        raise typer.Exit(code=1)
+
+    grand = Counter()
+    total_turns = flagged_total = 0
+    for path in paths:
+        try:
+            turns = json.loads(path.read_text(encoding="utf-8"))["turns"]
+        except (ValueError, KeyError, OSError) as exc:
+            typer.echo(f"FAILED {path.name}: {exc}", err=True)
+            continue
+        buckets = Counter(round(float(t.get("speaker_confidence", 1.0)), 3) for t in turns)
+        grand.update(buckets)
+        flagged = sum(n for c, n in buckets.items() if c < 0.999)
+        total_turns += len(turns)
+        flagged_total += flagged
+        manual = sum(1 for t in turns if t.get("speaker_source") == "manual")
+        unclear = sum(1 for t in turns if t.get("speaker") == "unclear")
+        typer.echo(
+            f"  {len(turns):>6} turns, {flagged:>5} flagged ({flagged/max(len(turns),1):>4.0%}), "
+            f"{manual:>5} manual, {unclear:>3} unclear"
+        )
+
+    if len(paths) > 1:
+        typer.echo(
+            f"\n{len(paths)} file(s), {total_turns} turns, {flagged_total} flagged "
+            f"({flagged_total/max(total_turns,1):.0%})"
+        )
+    typer.echo("\nconfidence breakdown:")
+    typer.echo(f"  {'confidence':>10} {'turns':>8}  meaning")
+    meanings = {
+        1.0: "settled - unanimous, or labelled by hand",
+        0.85: "unanimous, but the independent system disagreed",
+        0.0: "no usable view, or an existing label kept for you to confirm",
+    }
+    for conf, n in sorted(grand.items(), reverse=True):
+        note = meanings.get(conf, "the windows disagreed with each other")
+        typer.echo(f"  {conf:>10.3f} {n:>8}  {note}")
+    typer.echo(
+        "\n'flagged' means confidence below 1.0 - the turn has a label, but something is "
+        "uncertain.\n'unclear' means no label could be assigned at all, which is a subset of "
+        "the flagged turns."
+    )
 
 
 @app.command("label-diagnose")

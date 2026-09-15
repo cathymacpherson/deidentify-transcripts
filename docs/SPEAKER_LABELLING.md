@@ -98,6 +98,39 @@ Where every window agrees, the turn is confident; where they split, it is flagge
 the model's **stability under changed context** rather than asking it to rate itself, which models
 do poorly.
 
+#### The two labellers
+
+Confidence comes from comparing two systems that work in completely different ways.
+
+| | The LLM | The second opinion |
+|---|---|---|
+| Runs on | The configured inference server | The local machine — no server, no network |
+| How it decides | Reads the surrounding conversation and judges | Counts word patterns: question marks, first- and second-person density, turn length, neighbouring turns, how often a speaker holds the floor |
+| Typical accuracy | ~90% | ~70% |
+| Speed | Minutes per transcript | Instant |
+| Implementation | [labelling.py](../src/deidentify_transcripts/labelling.py) | [supervised.py](../src/deidentify_transcripts/supervised.py) |
+
+**The LLM assigns every label. The second opinion never changes one** — it is much weaker, and
+letting it overrule would trade accuracy for confidence.
+
+**The second opinion is optional.** It has to learn from transcripts someone has already checked,
+so a corpus with none runs without it. Labelling and accuracy are unaffected; only confidence is
+weaker, since it then rests on the model disagreeing with itself — which catches turns it is unsure
+about but not ones it is consistently wrong about. Expect roughly half as many real errors to be
+flagged. This is the situation every new project starts in, and it improves as soon as a few
+transcripts have been reviewed and `--reference` is pointed at them.
+
+It exists purely to disagree. Because it reaches its answers another way, it is wrong about
+different turns, so a disagreement is evidence neither system can produce alone.
+
+The second opinion is *trained*: it reads the already-labelled transcripts and works out from the
+human labels how much each pattern is worth. It is the only part of this system that learns from
+the corpus — the LLM never does.
+
+Training takes about four seconds on a corpus of ~80,000 turns, so it is **redone on every run
+rather than cached**. There is no model file to go stale, no cache to invalidate, and newly
+labelled transcripts are picked up automatically.
+
 #### Self-consistency is not enough on its own
 
 Asking one model the same question several times measures **instability, not correctness**. Where
@@ -120,9 +153,15 @@ Two rules for using it:
 
 - **The second opinion never changes a label.** It only adjusts how suspicious a turn looks. A
   weaker system overruling a stronger one trades accuracy for confidence.
-- **It must not have seen the speaker it is judging.** Where the second system learns from the
-  corpus, train it per fold, excluding the transcript's own speaker — otherwise it agrees for the
-  wrong reason and the disagreement signal is worth less than it appears.
+- **When scoring, it must not have seen the speaker it is judging.** Gold labels are present, so a
+  second system trained on that speaker agrees for the wrong reason and the disagreement signal is
+  worth less than it appears. `label-eval` therefore retrains per fold, excluding each
+  transcript's own speaker, which is what its `--mapping` is for.
+
+  **When labelling for real this does not apply.** There are no gold labels to leak, so the second
+  opinion is trained once over every labelled transcript available — more training data, a stronger
+  cross-check, and one training run instead of many. `label` needs no mapping; point `--reference`
+  at the labelled transcripts, or pass `none` to skip the second opinion entirely.
 
 Raising the sampling temperature or varying the window size decorrelates votes far more weakly than
 this, and was not worth the cost when measured.
@@ -243,28 +282,51 @@ Discovery is non-recursive, so re-running the command does not re-sort files alr
 
 ### Step 2 — label
 
-`deidentify-transcripts label <path> --mapping <identity.csv>` runs both passes and writes, per
-transcript:
+`deidentify-transcripts label <path>` runs both passes and writes, per transcript:
 
 - `output/labelled/<id>.json` — the transcript with `speaker`, `speaker_confidence` and
   `speaker_source` (`manual` or `model`) per turn;
-- `output/review/<id>.review.md` — the reviewer's report.
+- `output/review/<id>.review.json` — the reviewer's report.
 
 Point it at the transcripts that need labels, not at already-labelled ones.
 
-### Step 3 — read the review report
+### Step 3 — work through the review list
 
-Written for a person who will read the whole transcript anyway. It is a **priority list, not a
-filter**, and says so in its own header — because a third of errors sit in turns the system was
-confident about, and a report that implied otherwise would be actively harmful.
+`output/review/<id>.review.json` lists the turns the labeller is unsure about:
 
-- Flagged turns are grouped by *why* they were flagged, ordered by how error-dense each reason was
-  in testing.
-- Each is shown with surrounding turns, with the raw votes beside it. A misattributed turn usually
-  reads wrong in context — a question answered by the person who asked it, first-person narrative
-  given to the wrong speaker — and reading it as dialogue catches errors no confidence score marks.
-- Adjacent flagged turns are one block, because a run given to the wrong speaker is one correction,
-  not five.
+```json
+{
+  "transcript_id": "...",
+  "turns_total": 1146,
+  "turns_flagged": 283,
+  "note": "A priority list, not a filter...",
+  "items": [
+    {
+      "turn_id": 412,
+      "speaker": "C",
+      "confidence": 0.667,
+      "reason": "model disagreed with itself across views",
+      "votes": ["C", "T", "T"],
+      "text": "yeah"
+    }
+  ]
+}
+```
+
+Items are ordered most suspicious first — by how error-dense their reason was in testing, then by
+confidence. Consecutive `turn_id` values indicate a run flagged together, which is usually one
+correction rather than several.
+
+Surrounding context is deliberately not included: the reviewer has the transcript, and `turn_id`
+locates the turn in it. Duplicating context would make the file large without adding anything.
+
+Turns labelled by hand never appear. Labels the tool does not recognise — a merged `C/T` mark, or
+a local convention — are kept exactly as written and listed first, because only a person can say
+what they mean.
+
+**It is a priority list, not a filter**, and the `note` field says so. Errors also occur in turns
+the system was confident about, and those are not listed, so the whole transcript still needs
+reading.
 
 ### Triage: judge on lift, not correlation
 
@@ -584,7 +646,7 @@ bar to beat, then the review-burden curve. Read them together:
 
 ### The trained model, as a second opinion
 
-`--mapping` adds a trained sequence labeller
+For evaluation, `--mapping` adds a trained sequence labeller
 ([supervised.py](../src/deidentify_transcripts/supervised.py)) to the comparison. Unlike the
 baselines it **learns from the data**, so it is scored only on speaker-disjoint folds — without
 `--mapping` it is skipped rather than scored dishonestly.
