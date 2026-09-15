@@ -366,6 +366,22 @@ output/
 label it assigned, its confidence, why it was flagged, and the text. Most suspicious first. Use the
 turn id to find the turn in the transcript when you need the surrounding conversation.
 
+Confidence runs from 0 to 1 but only takes a few values, since it is a fraction of votes: `1.000`
+means everything agreed, `0.850` that only the second model objected, `0.667` that the language
+model disagreed with itself, `0.000` that it had no usable answer.
+
+`--flag-threshold` sets how long the list is — turns scoring below it are listed. The default
+`0.999` lists everything short of full agreement; `0.8` drops the turns only the second model
+disputed, which is typically a much shorter and higher-yield list. To see what each level is
+actually worth on your data:
+
+```bash
+deidentify-transcripts label-summary output/labelled/ --calibration <a scored run>.csv
+```
+
+That reports, for each confidence level, how often turns at that level were genuinely wrong — so
+you can choose the threshold from measurement rather than guesswork.
+
 **It is a priority list, not a filter.** About a third of errors sit in turns the system was
 confident about, so they will not appear in the report. Read the whole transcript; the report tells
 you where to look hardest.

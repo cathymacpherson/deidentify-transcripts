@@ -333,3 +333,89 @@ def test_label_works_with_no_labelled_corpus_at_all(tmp_path, monkeypatch):
     assert all(t["speaker"] in ("C", "T", "unclear") for t in labelled["turns"])
     review = json.loads((out / "review" / "t.review.json").read_text(encoding="utf-8"))
     assert review["turns_total"] == 40
+
+
+def test_speaker_source_matches_what_was_actually_preserved(tmp_path, monkeypatch):
+    """Provenance must use the same recognition rule as preservation, whatever the case."""
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+    from deidentify_transcripts.labelling import Anchors, WindowLabel, WindowLabels
+
+    src = tmp_path / "in"
+    src.mkdir()
+    rows = [{"speaker": "unknown", "text": f"words {i}"} for i in range(30)]
+    rows[0]["speaker"] = "c"          # lowercase
+    rows[1]["speaker"] = " T "        # padded
+    (src / "t.json").write_text(json.dumps({"transcript_id": "t", "turns": rows}), encoding="utf-8")
+
+    def fake(*, system, text, output_type):
+        ids = [int(line.split("]")[0][1:]) for line in text.strip().split("\n")]
+        if output_type is Anchors:
+            return Anchors(anchors=[])
+        return WindowLabels(labels=[WindowLabel(turn_id=i, speaker="C") for i in ids])
+
+    class FakeModel:
+        def __init__(self, settings):
+            self.structured = fake
+
+    monkeypatch.setattr(cli, "LocalModel", FakeModel)
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda c: object()))
+
+    out = tmp_path / "out"
+    result = CliRunner().invoke(cli.app, [
+        "label", str(src), "--output-dir", str(out),
+        "--reference", "none", "--window", "15", "--step", "5",
+    ])
+    assert result.exit_code == 0, result.stdout
+    assert "2 manual kept" in result.stdout
+
+    turns = json.loads((out / "labelled" / "t.json").read_text(encoding="utf-8"))["turns"]
+    assert turns[0]["speaker_source"] == "manual"
+    assert turns[1]["speaker_source"] == "manual"
+    assert turns[0]["speaker"] == "C"
+    assert turns[1]["speaker"] == "T"
+    assert turns[2]["speaker_source"] == "model"
+
+
+def test_flag_threshold_controls_how_long_the_review_list_is(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+    from deidentify_transcripts.labelling import Anchors, WindowLabel, WindowLabels
+
+    src = tmp_path / "in"
+    src.mkdir()
+    (src / "t.json").write_text(json.dumps({"transcript_id": "t", "turns": [
+        {"speaker": "unknown", "text": f"words {i}"} for i in range(40)]}), encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def fake(*, system, text, output_type):
+        ids = [int(line.split("]")[0][1:]) for line in text.strip().split("\n")]
+        if output_type is Anchors:
+            return Anchors(anchors=[])
+        calls["n"] += 1
+        # Alternate on some turns so a few end up with split votes.
+        return WindowLabels(labels=[
+            WindowLabel(turn_id=i, speaker=("T" if (i % 7 == 0 and calls["n"] % 2) else "C"))
+            for i in ids
+        ])
+
+    class FakeModel:
+        def __init__(self, settings):
+            self.structured = fake
+
+    monkeypatch.setattr(cli, "LocalModel", FakeModel)
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda c: object()))
+
+    def run(threshold, out):
+        CliRunner().invoke(cli.app, [
+            "label", str(src), "--output-dir", str(out), "--reference", "none",
+            "--window", "15", "--step", "5", "--flag-threshold", str(threshold),
+        ])
+        return json.loads((out / "review" / "t.review.json").read_text(encoding="utf-8"))
+
+    loose = run(0.999, tmp_path / "loose")
+    tight = run(0.5, tmp_path / "tight")
+    assert tight["turns_flagged"] <= loose["turns_flagged"]

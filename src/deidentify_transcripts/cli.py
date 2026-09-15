@@ -286,6 +286,13 @@ def label(
     ),
     window: int = typer.Option(40, "--window", min=5),
     step: int = typer.Option(13, "--step", min=1),
+    flag_threshold: float = typer.Option(
+        0.999, "--flag-threshold", min=0.0, max=1.0,
+        help=(
+            "Confidence below which a turn is listed for review. Lower it for a shorter, "
+            "higher-yield list (0.8 drops the turns only the second opinion disputed)."
+        ),
+    ),
     primary: str = typer.Option("C", "--primary"),
     secondary: str = typer.Option("T", "--secondary"),
 ) -> None:
@@ -366,10 +373,12 @@ def label(
             second_labels = list(second_labeller.predict(turns).labels)
             confidence = apply_second_opinion(result.votes, second_labels)
 
-        # label_transcript already preserves manual labels; record where each came from.
-        sources = [
-            "manual" if (t.speaker or "").strip() in labels else "model" for t in turns
-        ]
+        # Provenance must use the SAME recognition rule as preservation, or a label that was
+        # kept (a lowercase "c", say) is reported as though the model produced it.
+        from .labelling import existing_labels as _existing
+
+        manual_ids = set(_existing(turns, labels))
+        sources = ["manual" if t.turn_id in manual_ids else "model" for t in turns]
         for turn, assigned in zip(turns, result.labels):
             turn.speaker = assigned
 
@@ -396,12 +405,13 @@ def label(
                 build_review(
                     transcript.transcript_id, turns, result.labels,
                     result.votes, confidence, second_labels or None,
+                    threshold=flag_threshold,
                 ),
                 indent=2, ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        flagged = sum(1 for c in confidence if c < 0.999)
+        flagged = sum(1 for c in confidence if c < flag_threshold)
         kept = (
             f", {result.manual_count} manual kept" if result.manual_count
             else ", no existing labels found"
@@ -420,6 +430,10 @@ def label_summary(
     target: Path = typer.Argument(
         Path("output/labelled"), exists=True, readable=True,
         help="A labelled transcript, or the directory of them",
+    ),
+    calibration_path: Path | None = typer.Option(
+        None, "--calibration",
+        help="A scored run (label-report.csv). Estimates how many errors each group holds.",
     ),
 ) -> None:
     """Summarise labelled output: how many turns were flagged, and why.
@@ -477,6 +491,39 @@ def label_summary(
         "uncertain.\n'unclear' means no label could be assigned at all, which is a subset of "
         "the flagged turns."
     )
+
+    if calibration_path is not None:
+        import csv as _csv
+        from .triage import calibration_from_report, expected_errors
+
+        with calibration_path.open(encoding="utf-8", newline="") as handle:
+            calibration = calibration_from_report(list(_csv.DictReader(handle)))
+        if not calibration:
+            typer.echo(f"\nWARNING: no scored turns found in {calibration_path}", err=True)
+            return
+        rows_out = expected_errors(dict(grand), calibration)
+        typer.echo(
+            f"\nexpected errors, using measured error rates from {calibration_path.name}:"
+        )
+        typer.echo(
+            f"  {'confidence':>10} {'turns':>7} {'error rate':>11} {'errors here':>12} "
+            f"{'turns read':>11} {'errors found':>13}"
+        )
+        seen_turns = seen_errors = 0.0
+        total_expected = sum(e for _, _, e in rows_out)
+        # Least confident first: the order a reviewer actually works in.
+        for conf, n, errs in sorted(rows_out, key=lambda r: r[0]):
+            seen_turns += n
+            seen_errors += errs
+            rate = errs / n if n else 0.0
+            typer.echo(
+                f"  {conf:>10.3f} {n:>7} {rate:>10.1%} {errs:>12.1f} "
+                f"{int(seen_turns):>11} {seen_errors / max(total_expected, 1e-9):>12.0%}"
+            )
+        typer.echo(
+            f"\n  ~{total_expected:.0f} errors expected in {total_turns} turns. "
+            "Work down the list and stop where the return drops off."
+        )
 
 
 @app.command("label-diagnose")

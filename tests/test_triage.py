@@ -62,3 +62,87 @@ def test_high_rho_can_still_mean_low_lift():
     lift = quarter.share_of_errors / quarter.share_of_turns
     assert rho == pytest.approx(1.0)      # ranking is perfect
     assert lift < 1.5                     # but routing on it gains little
+
+
+def test_calibration_measures_error_rate_per_confidence():
+    from deidentify_transcripts.triage import calibration_from_report
+
+    rows = (
+        [{"gold": "C", "confidence": "1.000", "error": ""} for _ in range(90)]
+        + [{"gold": "C", "confidence": "1.000", "error": "WRONG"} for _ in range(10)]
+        + [{"gold": "C", "confidence": "0.667", "error": "WRONG"} for _ in range(5)]
+        + [{"gold": "C", "confidence": "0.667", "error": ""} for _ in range(5)]
+    )
+    cal = calibration_from_report(rows)
+    assert cal[1.0] == pytest.approx(0.10)
+    assert cal[0.667] == pytest.approx(0.50)
+
+
+def test_calibration_ignores_turns_with_no_gold_label():
+    from deidentify_transcripts.triage import calibration_from_report
+
+    rows = [
+        {"gold": "unknown", "confidence": "1.000", "error": ""},
+        {"gold": "C", "confidence": "1.000", "error": "WRONG"},
+    ]
+    assert calibration_from_report(rows) == {1.0: 1.0}
+
+
+def test_expected_errors_applies_measured_rates():
+    from deidentify_transcripts.triage import expected_errors
+
+    out = expected_errors({1.0: 700, 0.667: 30}, {1.0: 0.04, 0.667: 0.29})
+    assert out[0] == (1.0, 700, pytest.approx(28.0))
+    assert out[1] == (0.667, 30, pytest.approx(8.7))
+
+
+def test_expected_errors_falls_back_to_the_nearest_measured_level():
+    from deidentify_transcripts.triage import expected_errors
+
+    out = expected_errors({0.85: 100}, {0.667: 0.30, 1.0: 0.04})
+    assert out[0][2] == pytest.approx(4.0)  # 0.85 is nearer 1.0 than 0.667
+
+
+def test_expected_errors_with_no_calibration_is_empty():
+    from deidentify_transcripts.triage import expected_errors
+
+    assert expected_errors({1.0: 10}, {}) == []
+
+
+def test_label_summary_shows_expected_errors(tmp_path):
+    import csv
+    import json
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts.cli import app
+
+    turns_out = [
+        {"turn_id": i, "speaker": "C",
+         "speaker_confidence": 1.0 if i >= 20 else 0.667,
+         "speaker_source": "model", "text": f"t{i}"}
+        for i in range(100)
+    ]
+    labelled = tmp_path / "a.json"
+    labelled.write_text(json.dumps({"transcript_id": "a", "turns": turns_out}), encoding="utf-8")
+
+    cal = tmp_path / "cal.csv"
+    with cal.open("w", newline="", encoding="utf-8") as h:
+        w = csv.DictWriter(h, fieldnames=["gold", "confidence", "error"])
+        w.writeheader()
+        for _ in range(96):
+            w.writerow({"gold": "C", "confidence": "1.000", "error": ""})
+        for _ in range(4):
+            w.writerow({"gold": "C", "confidence": "1.000", "error": "WRONG"})
+        for _ in range(7):
+            w.writerow({"gold": "C", "confidence": "0.667", "error": "WRONG"})
+        for _ in range(13):
+            w.writerow({"gold": "C", "confidence": "0.667", "error": ""})
+
+    result = CliRunner().invoke(
+        app, ["label-summary", str(labelled), "--calibration", str(cal)]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "expected errors" in result.stdout
+    assert "errors expected in 100 turns" in result.stdout

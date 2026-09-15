@@ -98,6 +98,50 @@ Where every window agrees, the turn is confident; where they split, it is flagge
 the model's **stability under changed context** rather than asking it to rate itself, which models
 do poorly.
 
+#### What the confidence number means
+
+Confidence is **not continuous**. It is a fraction of votes, so it takes about eight discrete
+values — which is why a summary of it produces neat rows rather than a spread.
+
+Each turn is seen by three or four windows, so agreement can only be 3/3, 2/3, 4/4, 3/4 and so on.
+That figure is then multiplied by 0.85 where the second opinion disagrees.
+
+| Value | How it arises |
+|---|---|
+| 1.000 | Every view agreed, and the second opinion agreed too — or the turn was labelled by hand |
+| 0.850 | Every view agreed, but the second opinion disagreed |
+| 0.750 | 3 of 4 views agreed |
+| 0.667 | 2 of 3 views agreed |
+| 0.637 | 3 of 4 agreed, and the second opinion disagreed |
+| 0.567 | 2 of 3 agreed, and the second opinion disagreed |
+| 0.000 | No usable view, or a label kept verbatim for a human to confirm |
+
+The number has no meaning as a probability. It is a **rank**: turns with lower values were wrong
+more often when measured. How much more often is a property of the corpus — measure it with
+`label-summary --calibration` rather than assuming.
+
+#### Choosing the flag threshold
+
+`label --flag-threshold` sets the value below which a turn is listed for review. Because confidence
+is discrete, **only a few thresholds change anything** — anything between two adjacent values gives
+an identical result:
+
+| Threshold | Lists |
+|---|---|
+| `0.999` (default) | everything except perfect agreement |
+| `0.8` | drops turns only the second opinion disputed |
+| `0.7` | also drops 3-of-4 agreement |
+| `0.6` | only the least confident turns |
+
+It is a display choice, not a labelling one. Confidence is stored per turn either way, so a
+different threshold changes which turns are listed and nothing else.
+
+**A longer list is not automatically better.** Where a quarter of every transcript is flagged, the
+flag stops commanding attention — a reviewer who meets seven correct turns in a row begins skimming
+the flags too. A short list that is right about half the time is worth more than a long one that is
+right one time in five. `label-summary --calibration` gives the yield at each level, which is the
+basis for choosing.
+
 #### The two labellers
 
 Confidence comes from comparing two systems that work in completely different ways.

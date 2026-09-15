@@ -91,3 +91,41 @@ def triage_curve(stats: list[FileStats]) -> list[TriagePoint]:
             )
         )
     return points
+
+
+def calibration_from_report(rows: list[dict[str, str]], roles=("C", "T")) -> dict[float, float]:
+    """Measured error rate per confidence value, from a scored run.
+
+    Turns the abstract confidence number into something checkable: how often turns at each level
+    were actually wrong, on this corpus, against human labels.
+    """
+    buckets: dict[float, list[int]] = {}
+    for row in rows:
+        if row.get("gold") not in roles:
+            continue
+        try:
+            conf = round(float(row["confidence"]), 3)
+        except (KeyError, ValueError):
+            continue
+        buckets.setdefault(conf, []).append(1 if row.get("error") == "WRONG" else 0)
+    return {c: sum(v) / len(v) for c, v in buckets.items() if v}
+
+
+def expected_errors(
+    counts: dict[float, int], calibration: dict[float, float]
+) -> list[tuple[float, int, float]]:
+    """Pair each confidence level with how many errors it is expected to hold.
+
+    A level absent from the calibration falls back to the nearest measured one, so an unseen
+    confidence value still gets a sensible estimate rather than being dropped.
+    """
+    if not calibration:
+        return []
+    out = []
+    for conf in sorted(counts, reverse=True):
+        rate = calibration.get(conf)
+        if rate is None:
+            nearest = min(calibration, key=lambda c: abs(c - conf))
+            rate = calibration[nearest]
+        out.append((conf, counts[conf], counts[conf] * rate))
+    return out
