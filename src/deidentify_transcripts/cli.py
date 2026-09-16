@@ -499,6 +499,10 @@ def label_summary(
         None, "--calibration",
         help="A scored run (label-report.csv). Estimates how many errors each group holds.",
     ),
+    threshold: float = typer.Option(
+        None, "--threshold", min=0.0, max=1.0,
+        help="Count as flagged below this. Defaults to the same value `label` uses.",
+    ),
 ) -> None:
     """Summarise labelled output: how many turns were flagged, and why.
 
@@ -515,6 +519,9 @@ def label_summary(
         typer.echo(f"FAILED: no labelled transcripts found at {target}", err=True)
         raise typer.Exit(code=1)
 
+    from .review import FLAG_THRESHOLD
+
+    cut = FLAG_THRESHOLD if threshold is None else threshold
     grand = Counter()
     total_turns = flagged_total = 0
     for path in paths:
@@ -525,7 +532,7 @@ def label_summary(
             continue
         buckets = Counter(round(float(t.get("speaker_confidence", 1.0)), 3) for t in turns)
         grand.update(buckets)
-        flagged = sum(n for c, n in buckets.items() if c < 0.999)
+        flagged = sum(n for c, n in buckets.items() if c < cut)
         total_turns += len(turns)
         flagged_total += flagged
         manual = sum(1 for t in turns if t.get("speaker_source") == "manual")
@@ -538,51 +545,73 @@ def label_summary(
     if len(paths) > 1:
         typer.echo(
             f"\n{len(paths)} file(s), {total_turns} turns, {flagged_total} flagged "
-            f"({flagged_total/max(total_turns,1):.0%})"
+            f"({flagged_total/max(total_turns,1):.0%}) at threshold {cut}"
         )
+    else:
+        typer.echo(f"  (flagged counted below {cut}, the threshold `label` uses)")
+    from .triage import CONFIDENCE_BANDS, band_label, band_of
+
     typer.echo("\nconfidence breakdown:")
-    typer.echo(f"  {'confidence':>10} {'turns':>8}  meaning")
+    typer.echo(f"  {'confidence':>15} {'turns':>8}  meaning")
     meanings = {
-        1.0: "settled - unanimous, or labelled by hand",
-        0.85: "unanimous, but the independent system disagreed",
-        0.0: "no usable view, or an existing label kept for you to confirm",
+        (0.999, 1.01): "settled - every view agreed, nothing objected",
+        (0.95, 0.999): "a weak objection from the independent system",
+        (0.85, 0.95): "the independent system objected",
+        (0.75, 0.85): "objected to, or one view out of four differed",
+        (0.65, 0.75): "the views disagreed with each other",
+        (0.5, 0.65): "the views disagreed, and the independent system objected too",
+        (0.0, 0.5): "little or no usable agreement",
     }
-    for conf, n in sorted(grand.items(), reverse=True):
-        note = meanings.get(conf, "the windows disagreed with each other")
-        typer.echo(f"  {conf:>10.3f} {n:>8}  {note}")
+    banded: dict[tuple[float, float], int] = {}
+    for conf, n in grand.items():
+        banded[band_of(float(conf))] = banded.get(band_of(float(conf)), 0) + n
+    for band in reversed(CONFIDENCE_BANDS):
+        if band in banded:
+            typer.echo(
+                f"  {band_label(band):>15} {banded[band]:>8}  {meanings.get(band, '')}"
+            )
     typer.echo(
-        "\n'flagged' means confidence below 1.0 - the turn has a label, but something is "
-        "uncertain.\n'unclear' means no label could be assigned at all, which is a subset of "
-        "the flagged turns."
+        "\n'flagged' means confidence below the threshold - the turn has a label, but something "
+        "is\nuncertain. 'unclear' means no label could be assigned at all, a subset of those."
     )
 
     if calibration_path is not None:
         import csv as _csv
-        from .triage import calibration_from_report, expected_errors
+
+        from .triage import banded_calibration
 
         with calibration_path.open(encoding="utf-8", newline="") as handle:
-            calibration = calibration_from_report(list(_csv.DictReader(handle)))
+            calibration = banded_calibration(list(_csv.DictReader(handle)))
         if not calibration:
             typer.echo(f"\nWARNING: no scored turns found in {calibration_path}", err=True)
             return
-        rows_out = expected_errors(dict(grand), calibration)
-        typer.echo(
-            f"\nexpected errors, using measured error rates from {calibration_path.name}:"
+
+        total_expected = sum(
+            n * calibration[b][1] for b, n in banded.items() if b in calibration
         )
         typer.echo(
-            f"  {'confidence':>10} {'turns':>7} {'error rate':>11} {'errors here':>12} "
+            f"\nexpected errors, using error rates measured in {calibration_path.name}:"
+        )
+        typer.echo(
+            f"  {'confidence':>15} {'turns':>7} {'error rate':>11} {'errors':>8} "
             f"{'turns read':>11} {'errors found':>13}"
         )
         seen_turns = seen_errors = 0.0
-        total_expected = sum(e for _, _, e in rows_out)
-        # Least confident first: the order a reviewer actually works in.
-        for conf, n, errs in sorted(rows_out, key=lambda r: r[0]):
+        for band in CONFIDENCE_BANDS:
+            n = banded.get(band)
+            if not n:
+                continue
+            if band not in calibration:
+                typer.echo(f"  {band_label(band):>15} {n:>7}   (not measured)")
+                continue
+            sample, rate = calibration[band]
+            errs = n * rate
             seen_turns += n
             seen_errors += errs
-            rate = errs / n if n else 0.0
+            note = "  few samples" if sample < 30 else ""
             typer.echo(
-                f"  {conf:>10.3f} {n:>7} {rate:>10.1%} {errs:>12.1f} "
-                f"{int(seen_turns):>11} {seen_errors / max(total_expected, 1e-9):>12.0%}"
+                f"  {band_label(band):>15} {n:>7} {rate:>10.1%} {errs:>8.1f} "
+                f"{int(seen_turns):>11} {seen_errors / max(total_expected, 1e-9):>12.0%}{note}"
             )
         typer.echo(
             f"\n  ~{total_expected:.0f} errors expected in {total_turns} turns. "

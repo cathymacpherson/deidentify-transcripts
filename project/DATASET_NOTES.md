@@ -209,6 +209,51 @@ other and both contradict the gold label, and have a human check that small set.
 label error rate cheaply but finds only errors the systems happen to catch, so it is a floor rather
 than a true ceiling — worth stating that way in any write-up.
 
+## Production run
+
+The transcripts that needed labels — the unlabelled set plus the partially coded ones — were
+labelled with `deidentify-transcripts label` at the default settings (window 40, step 13,
+flag threshold 0.75, second opinion trained on the labelled corpus).
+
+| | |
+|---|---|
+| Transcripts | 22 |
+| Turns labelled | 17,691 |
+| Manual labels preserved | 350 across 3 files (4, 49 and 297) |
+| Flagged for review | 3,009 turns (17%) |
+| Expected errors | ~1,710 (**9.7%**) |
+| Expected errors captured by the review lists | ~55% |
+| Errors expected at full confidence | ~493 (29% of the total) |
+
+**The estimated error rate matches the measured one.** Held-out evaluation over 20 labelled
+transcripts gave 8.8%; this run's calibrated estimate is 9.7%. The labeller behaves on transcripts
+it has never seen much as it did on scored ones, which is the only check available without gold
+labels.
+
+### Transcripts needing more than their review list
+
+Flag rates ranged from 6% to 33%. Three transcripts stand well above the rest — one at 33%, one at
+26%, one at 24% — and flag rate correlates with error rate, if weakly. Those hold a
+disproportionate share of the errors and warrant fuller reading than their review lists alone.
+
+### Partially coded transcripts behave differently
+
+In the most heavily coded file, 297 of 770 turns were already labelled by hand. Of the 473 the
+model labelled, 24% were flagged — against a 17% average across the corpus.
+
+The plausible reading is that turns a human left uncoded are the ones they found hard, so the model
+inherits the difficult remainder. Expect a partially coded transcript's *model-labelled portion* to
+be worse than a fresh transcript's, even though its overall accuracy is better for having the
+human anchors.
+
+### What to tell anyone using this output
+
+- Roughly **9–10% of model-assigned turns are wrong**.
+- About **a third of those errors carry no warning** — they sit at full confidence and no review
+  threshold reaches them. The review lists are a priority order, not a filter.
+- Turns labelled by hand are unchanged and marked `speaker_source: "manual"`.
+- Speaker values the tool does not recognise were kept verbatim and listed first for review.
+
 ## Label conventions in this corpus
 
 ### `other` has no confirmed examples yet

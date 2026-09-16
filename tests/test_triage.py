@@ -408,3 +408,70 @@ def test_audit_rejects_a_report_without_gold_labels(tmp_path):
     result = CliRunner().invoke(app, ["label-audit", str(report), "-o", str(tmp_path / "o.csv")])
     assert result.exit_code == 1
     assert "no gold labels" in result.stdout + str(result.stderr)
+
+
+def test_summary_bins_continuous_confidence(tmp_path):
+    """Weighted confidence is effectively continuous; a row per value is unreadable."""
+    import csv
+    import json
+    import random
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts.cli import app
+
+    rng = random.Random(0)
+    turns_out = [
+        {"turn_id": i, "speaker": "C",
+         "speaker_confidence": round(rng.uniform(0.4, 1.0), 3),
+         "speaker_source": "model", "text": f"t{i}"}
+        for i in range(600)
+    ]
+    labelled = tmp_path / "a.json"
+    labelled.write_text(json.dumps({"transcript_id": "a", "turns": turns_out}), encoding="utf-8")
+
+    cal = tmp_path / "cal.csv"
+    with cal.open("w", newline="", encoding="utf-8") as h:
+        w = csv.DictWriter(h, fieldnames=["gold", "confidence", "error"])
+        w.writeheader()
+        for _ in range(400):
+            conf = rng.uniform(0.4, 1.0)
+            w.writerow({"gold": "C", "confidence": f"{conf:.3f}",
+                        "error": "WRONG" if rng.random() > conf else ""})
+
+    result = CliRunner().invoke(
+        app, ["label-summary", str(labelled), "--calibration", str(cal)]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    lines = result.stdout.splitlines()
+    # Bands, not one row per distinct value: the output must stay short.
+    assert len(lines) < 40, f"output is {len(lines)} lines - not binned"
+    assert "0.65 - 0.75" in result.stdout
+    assert "errors expected in 600 turns" in result.stdout
+
+
+def test_summary_marks_bands_with_too_few_samples(tmp_path):
+    import csv
+    import json
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts.cli import app
+
+    labelled = tmp_path / "a.json"
+    labelled.write_text(json.dumps({"transcript_id": "a", "turns": [
+        {"turn_id": i, "speaker": "C", "speaker_confidence": 0.7,
+         "speaker_source": "model", "text": "x"} for i in range(50)]}), encoding="utf-8")
+
+    cal = tmp_path / "cal.csv"
+    with cal.open("w", newline="", encoding="utf-8") as h:
+        w = csv.DictWriter(h, fieldnames=["gold", "confidence", "error"])
+        w.writeheader()
+        for i in range(5):        # a band measured on only five turns
+            w.writerow({"gold": "C", "confidence": "0.700", "error": "WRONG" if i < 2 else ""})
+
+    result = CliRunner().invoke(
+        app, ["label-summary", str(labelled), "--calibration", str(cal)]
+    )
+    assert "few samples" in result.stdout

@@ -93,6 +93,44 @@ def triage_curve(stats: list[FileStats]) -> list[TriagePoint]:
     return points
 
 
+#: Confidence bands. Once disagreement strength is weighted in, confidence is effectively
+#: continuous, so per-value rates are computed on a handful of turns each and are pure noise.
+#: Reporting and calibration both work in bands.
+CONFIDENCE_BANDS = [
+    (0.0, 0.5), (0.5, 0.65), (0.65, 0.75), (0.75, 0.85), (0.85, 0.95), (0.95, 0.999),
+    (0.999, 1.01),
+]
+
+
+def band_of(confidence: float) -> tuple[float, float]:
+    """The band a confidence value falls in."""
+    for low, high in CONFIDENCE_BANDS:
+        if low <= confidence < high:
+            return low, high
+    return CONFIDENCE_BANDS[-1]
+
+
+def band_label(band: tuple[float, float]) -> str:
+    low, high = band
+    return "1.000 (settled)" if low >= 0.999 else f"{low:.2f} - {high:.2f}"
+
+
+def banded_calibration(
+    rows: list[dict[str, str]], roles=("C", "T")
+) -> dict[tuple[float, float], tuple[int, float]]:
+    """Turn count and error rate per confidence band, from a scored run."""
+    buckets: dict[tuple[float, float], list[int]] = {}
+    for row in rows:
+        if row.get("gold") not in roles:
+            continue
+        try:
+            conf = float(row["confidence"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        buckets.setdefault(band_of(conf), []).append(1 if row.get("error") == "WRONG" else 0)
+    return {b: (len(v), sum(v) / len(v)) for b, v in buckets.items() if v}
+
+
 def calibration_from_report(rows: list[dict[str, str]], roles=("C", "T")) -> dict[float, float]:
     """Measured error rate per confidence value, from a scored run.
 

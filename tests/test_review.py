@@ -162,7 +162,7 @@ def test_label_summary_reconciles_flagged_against_unclear(tmp_path):
     result = CliRunner().invoke(app, ["label-summary", str(path)])
 
     assert result.exit_code == 0, result.stdout
-    assert "6 flagged" in result.stdout      # 2 unclear + 4 disputed
+    assert "2 flagged" in result.stdout      # at the 0.75 default, only the unclear ones
     assert "2 manual" in result.stdout
     assert "2 unclear" in result.stdout
     assert "confidence breakdown" in result.stdout
@@ -433,3 +433,27 @@ def test_default_threshold_excludes_weakly_disputed_turns():
     review = build_review("demo", t, ["C"] * 3, v, [0.96, 0.80, 0.66])
     listed = {item["turn_id"] for item in review["items"]}
     assert listed == {2}
+
+
+def test_summary_counts_flagged_at_the_same_threshold_label_uses(tmp_path):
+    """The summary and the review files must agree on what 'flagged' means."""
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts.cli import app
+    from deidentify_transcripts.review import FLAG_THRESHOLD
+
+    turns_out = [
+        {"turn_id": i, "speaker": "C",
+         "speaker_confidence": 0.90 if i < 30 else (0.60 if i < 40 else 1.0),
+         "speaker_source": "model", "text": f"t{i}"}
+        for i in range(100)
+    ]
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps({"transcript_id": "a", "turns": turns_out}), encoding="utf-8")
+
+    default = CliRunner().invoke(app, ["label-summary", str(path)])
+    assert f"below {FLAG_THRESHOLD}" in default.stdout
+    assert "10 flagged" in default.stdout          # only the 0.60 group
+
+    loose = CliRunner().invoke(app, ["label-summary", str(path), "--threshold", "0.999"])
+    assert "40 flagged" in loose.stdout            # 0.90 group included too

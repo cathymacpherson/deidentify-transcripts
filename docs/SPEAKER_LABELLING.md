@@ -141,36 +141,85 @@ basis for choosing on a new corpus.
 
 #### The two labellers
 
-Confidence comes from comparing two systems that work in completely different ways.
+Confidence comes from comparing two systems that reach their answers in completely different ways.
 
 | | The LLM | The second opinion |
 |---|---|---|
 | Runs on | The configured inference server | The local machine — no server, no network |
-| How it decides | Reads the surrounding conversation and judges | Counts word patterns: question marks, first- and second-person density, turn length, neighbouring turns, how often a speaker holds the floor |
+| How it decides | Reads the surrounding conversation and judges | A trained statistical model over word patterns |
 | Typical accuracy | ~90% | ~70% |
-| Speed | Minutes per transcript | Instant |
+| Speed | Minutes per transcript | A few seconds for a whole corpus |
 | Implementation | [labelling.py](../src/deidentify_transcripts/labelling.py) | [supervised.py](../src/deidentify_transcripts/supervised.py) |
 
 **The LLM assigns every label. The second opinion never changes one** — it is much weaker, and
-letting it overrule would trade accuracy for confidence.
+letting it overrule would trade accuracy for confidence. It exists purely to *disagree*: because it
+works another way, it is wrong about different turns, so a disagreement is evidence neither system
+can produce alone.
 
-**The second opinion is optional.** It has to learn from transcripts someone has already checked,
-so a corpus with none runs without it. Labelling and accuracy are unaffected; only confidence is
-weaker, since it then rests on the model disagreeing with itself — which catches turns it is unsure
-about but not ones it is consistently wrong about. Expect roughly half as many real errors to be
-flagged. This is the situation every new project starts in, and it improves as soon as a few
-transcripts have been reviewed and `--reference` is pointed at them.
+##### How the second opinion actually works
 
-It exists purely to disagree. Because it reaches its answers another way, it is wrong about
-different turns, so a disagreement is evidence neither system can produce alone.
+It is a **sequence labeller in two parts**, both learned from transcripts a human has already
+coded. No third-party libraries; it is a few hundred lines of arithmetic.
 
-The second opinion is *trained*: it reads the already-labelled transcripts and works out from the
-human labels how much each pattern is worth. It is the only part of this system that learns from
-the corpus — the LLM never does.
+**1. Per-turn scoring (logistic regression).** Each turn is reduced to a set of named features:
 
-Training takes about four seconds on a corpus of ~80,000 turns, so it is **redone on every run
-rather than cached**. There is no model file to go stale, no cache to invalidate, and newly
-labelled transcripts are picked up automatically.
+- ends in a question mark; opens with a question word (*what, how, why, did, can…*)
+- rate of first-person words (*I, my, me*), second-person (*you, your*), plural (*we, us*)
+- hedges and fillers (*um, like, I mean, you know*)
+- reflective phrases (*it sounds like, so you're saying, I wonder*)
+- process talk (*our time, next week, last session, before we finish*)
+- length band — very short, short, long — plus log length
+- position through the transcript
+- **and every one of the above for the two turns either side**
+
+Each feature carries a weight learned from the human labels; the weighted sum gives the chance that
+turn is the therapist. The neighbouring-turn features are what let it use context at all, and are
+most of why it beats a per-turn rule.
+
+**2. Run structure (transition probabilities).** Separately, it counts how often each role is
+followed by each role — the corpus's actual pattern of who holds the floor and for how long. This
+replaces a hand-set smoothing constant with something measured.
+
+**3. Decoding.** The two parts are combined to label the whole sequence. Two options:
+
+- `marginal` (the default) labels each turn by its own probability, having accounted for its
+  neighbours;
+- `viterbi` picks the single most likely label *sequence*.
+
+Viterbi maximises the likelihood of the whole path, which on a corpus where most boundaries are
+"no change" biases it towards suppressing switches — good for per-turn accuracy, bad for finding
+changeovers. Marginal decoding measured better on both counts and is therefore the default.
+
+Forward-backward marginals also give the model its own per-turn confidence, which is what lets a
+*strongly held* disagreement count for more than a marginal one.
+
+**Inspect what it learned** rather than taking any of this on trust:
+
+```bash
+deidentify-transcripts second-opinion data/labelled --top 20
+```
+
+That prints the largest feature weights and the learned run structure. Runs offline; shows feature
+names and numbers only, never transcript text.
+
+##### How its disagreement becomes confidence
+
+Where it disagrees with the LLM, the turn's confidence is discounted — **scaled by how sure the
+second opinion is**. A disagreement it barely believes barely counts; one it is certain of counts
+for much more. See [What the confidence number means](#what-the-confidence-number-means).
+
+##### It is optional
+
+It has to learn from transcripts someone has already coded, so a corpus with none simply runs
+without it. Labelling and accuracy are unaffected; only confidence is weaker, since it then rests
+on the LLM disagreeing with itself — which catches turns it is unsure about but not ones it is
+consistently wrong about. Expect roughly half as many real errors to be flagged.
+
+This is where every new project starts, and it improves as soon as a few transcripts have been
+reviewed and `--reference` is pointed at them.
+
+Training takes about four seconds on a corpus of ~80,000 turns, so it is redone on every run rather
+than cached: no model file to go stale, and newly reviewed transcripts are picked up automatically.
 
 #### Self-consistency is not enough on its own
 
@@ -687,29 +736,20 @@ bar to beat, then the review-burden curve. Read them together:
 
 ### The trained model, as a second opinion
 
-For evaluation, `--mapping` adds a trained sequence labeller
-([supervised.py](../src/deidentify_transcripts/supervised.py)) to the comparison. Unlike the
-baselines it **learns from the data**, so it is scored only on speaker-disjoint folds — without
-`--mapping` it is skipped rather than scored dishonestly.
+The same model described in
+[How the second opinion actually works](#how-the-second-opinion-actually-works), used here as a
+scored baseline as well as a cross-check.
 
-Two learned parts:
+Two things matter for evaluation specifically:
 
-- **Emissions** — logistic regression over per-turn features: question form, first/second-person
-  and plural rates, reflective and process-talk phrases, length buckets, position in the
-  transcript, and the same features for the two turns either side. Sparse and named, so the
-  learned weights can be printed and read.
-- **Transitions** — how often each role follows each role, learned from the corpus. This replaces
-  the rule baseline's hand-set smoothing constant with the actual run-length structure, and is
-  aimed directly at boundary detection.
+- **It learns from the corpus**, so it must be scored on speaker-disjoint folds — `label-eval`
+  retrains per fold, excluding each transcript's own speaker, which is what `--mapping` is for.
+  Without it the model is skipped rather than scored dishonestly.
+- **Report per fold as well as pooled.** A wide per-fold spread means performance depends on which
+  speakers are held out, which a pooled figure hides.
 
-Viterbi decoding picks the best whole-sequence path; forward-backward marginals supply per-turn
-confidence, so the review queue has a real probability rather than a hand-tuned score. A turn whose
-gold label is neither role breaks the transition chain rather than inventing a transition that
-never occurred.
-
-Implemented without third-party dependencies, and reported per fold as well as pooled — a wide
-per-fold spread means performance depends on which speakers are held out, which a pooled figure
-hides.
+A turn whose gold label is neither role breaks the transition chain rather than inventing a
+transition that never occurred.
 
 ### Scoring the LLM passes
 
