@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import csv as _csv_module
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -624,11 +625,27 @@ def label_audit(
     report: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True,
                                   help="A scored run (label-report.csv)"),
     output: Path = typer.Option(
-        Path("label-audit.csv"), "--output", "-o", help="Where to write the audit list"
+        Path("label-audit.csv"), "--output", "-o",
+        help="Where to write a single combined list",
+    ),
+    annotate: Path | None = typer.Option(
+        None, "--annotate",
+        help=(
+            "Write the whole report with 'check' and 'verdict' columns added, instead of a "
+            "separate list. Keeps every turn in order, so context comes from adjacent rows."
+        ),
+    ),
+    annotate_dir: Path | None = typer.Option(
+        None, "--annotate-dir",
+        help="As --annotate, but one file per session. Each keeps all of that session's turns.",
     ),
     min_confidence: float = typer.Option(
         0.95, "--min-confidence", min=0.0, max=1.0,
         help="Only list disagreements the labeller was at least this confident about",
+    ),
+    context: int = typer.Option(
+        2, "--context", min=0, max=5,
+        help="Turns of surrounding conversation to include, so no transcript lookup is needed",
     ),
     primary: str = typer.Option("C", "--primary"),
     secondary: str = typer.Option("T", "--secondary"),
@@ -650,6 +667,14 @@ def label_audit(
         typer.echo("FAILED: not a scored report (no gold labels to check against)", err=True)
         raise typer.Exit(code=1)
 
+    # Index every turn so each candidate can carry its surrounding conversation.
+    by_file: dict[str, dict[int, dict[str, str]]] = {}
+    for row in rows:
+        try:
+            by_file.setdefault(row["file"], {})[int(row["turn_id"])] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+
     candidates = []
     for row in rows:
         if row["gold"] not in labels or row["predicted"] not in labels:
@@ -668,18 +693,35 @@ def label_audit(
     # Both systems agreeing against the human is the strongest evidence, so those come first.
     candidates.sort(key=lambda c: (not c[0], -c[1]))
 
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = _csv.writer(handle)
-        writer.writerow([
-            "file", "turn_id", "human_label", "suggested_label", "confidence",
-            "second_system_agrees", "votes", "text", "verdict",
-        ])
-        for seconded, confidence, row in candidates:
-            writer.writerow([
-                row["file"], row["turn_id"], row["gold"], row["predicted"],
-                f"{confidence:.3f}", "yes" if seconded else "",
-                row.get("votes", ""), row.get("text", ""), "",
-            ])
+    before = [f"-{n}" for n in range(context, 0, -1)]
+    after = [f"+{n}" for n in range(1, context + 1)]
+    columns = (
+        ["file", "turn_id", "human_label", "suggested_label", "confidence",
+         "second_system_agrees"]
+        + before
+        + ["THIS TURN"]
+        + after
+        + ["votes", "verdict"]
+    )
+
+    def neighbour(row, offset):
+        """A surrounding turn as 'label: text', so the exchange reads in one cell."""
+        turns_in_file = by_file.get(row["file"], {})
+        other = turns_in_file.get(int(row["turn_id"]) + offset)
+        if other is None:
+            return ""
+        label = other.get("gold") or other.get("predicted") or "?"
+        return f"{label}: {other.get('text', '')}"
+
+    def as_row(seconded, confidence, row):
+        return (
+            [row["file"], row["turn_id"], row["gold"], row["predicted"],
+             f"{confidence:.3f}", "yes" if seconded else ""]
+            + [neighbour(row, -n) for n in range(context, 0, -1)]
+            + [row.get("text", "")]
+            + [neighbour(row, n) for n in range(1, context + 1)]
+            + [row.get("votes", ""), ""]
+        )
 
     scored = sum(1 for r in rows if r["gold"] in labels)
     both = sum(1 for seconded, _, _ in candidates if seconded)
@@ -688,10 +730,121 @@ def label_audit(
         f"({len(candidates)/max(scored,1):.1%})"
     )
     typer.echo(f"  of those, {both} also backed by the second system - check these first")
-    typer.echo(f"\nwritten to {output}")
+
+    # Every turn where the labeller differs from the human, split by whether its own views
+    # agreed. A unanimous disagreement is evidence about the human label; a split one is mostly
+    # evidence the turn is hard.
+    all_disagreements = [
+        r for r in rows
+        if r["gold"] in labels and r["predicted"] in labels and r["predicted"] != r["gold"]
+    ]
+    if all_disagreements:
+        def unanimous(row):
+            votes = [v for v in row.get("votes", "").split("|") if v]
+            return bool(votes) and len(set(votes)) == 1
+
+        agreed = [r for r in all_disagreements if unanimous(r)]
+        split = [r for r in all_disagreements if not unanimous(r)]
+        typer.echo(
+            f"\nall {len(all_disagreements)} turn(s) where the labeller differs from the human:"
+        )
+        typer.echo(
+            f"  {len(agreed):>6} ({len(agreed)/len(all_disagreements):>4.0%}) "
+            "the labeller's views were unanimous - evidence about the human label"
+        )
+        typer.echo(
+            f"  {len(split):>6} ({len(split)/len(all_disagreements):>4.0%}) "
+            "its views were split - mostly evidence the turn is hard"
+        )
+        listed = {(r["file"], r["turn_id"]) for _, _, r in candidates}
+        held_back = [r for r in agreed if (r["file"], r["turn_id"]) not in listed]
+        if held_back:
+            typer.echo(
+                f"  {len(held_back)} unanimous disagreement(s) fall below --min-confidence "
+                f"{min_confidence} and are not listed;\n  lower it to include them."
+            )
+
+    if annotate_dir is not None:
+        # One file per session, each complete: small enough to open, and context still comes
+        # from adjacent rows because nothing is filtered out.
+        marked = {
+            (row["file"], row["turn_id"]): ("strong" if seconded else "yes")
+            for seconded, _, row in candidates
+        }
+        source_columns = list(rows[0].keys())
+        annotate_dir.mkdir(parents=True, exist_ok=True)
+        grouped: dict[str, list[dict[str, str]]] = {}
+        for row in rows:
+            grouped.setdefault(row["file"], []).append(row)
+
+        summary = []
+        for name, file_rows in grouped.items():
+            target = annotate_dir / f"{Path(name).stem}.review.csv"
+            flagged_here = 0
+            with target.open("w", encoding="utf-8", newline="") as handle:
+                writer = _csv.writer(handle)
+                writer.writerow(["check", "verdict"] + source_columns)
+                for row in file_rows:
+                    flag = marked.get((row["file"], row["turn_id"]), "")
+                    flagged_here += 1 if flag else 0
+                    writer.writerow([flag, ""] + [row.get(col, "") for col in source_columns])
+            strong = sum(
+                1 for row in file_rows
+                if marked.get((row["file"], row["turn_id"])) == "strong"
+            )
+            summary.append((flagged_here, strong, len(file_rows), Path(name).stem))
+
+        from .triage import write_codebook
+
+        write_codebook(annotate_dir / "codebook.csv")
+        typer.echo(f"\n{len(grouped)} session file(s) written to {annotate_dir}/")
+        typer.echo(f"  plus codebook.csv explaining every column")
+        typer.echo(f"  {'session':<34} {'turns':>7} {'to check':>9} {'strong':>7}")
+        for flagged_here, strong, total, stem in sorted(summary, reverse=True):
+            typer.echo(f"  {stem:<34} {total:>7} {flagged_here:>9} {strong:>7}")
+        typer.echo(
+            "\n  Each file holds every turn of that session, in order. Filter on "
+            "check = 'strong'\n  first, then 'yes'; the turns either side are the rows either "
+            "side.\n  Busiest sessions listed first."
+        )
+    elif annotate is not None:
+        # One file, every turn, in order: adjacent rows give the surrounding conversation, and
+        # the 'check' column marks what to filter on.
+        marked = {
+            (row["file"], row["turn_id"]): ("strong" if seconded else "yes")
+            for seconded, _, row in candidates
+        }
+        source_columns = list(rows[0].keys())
+        with annotate.open("w", encoding="utf-8", newline="") as handle:
+            writer = _csv.writer(handle)
+            writer.writerow(["check", "verdict"] + source_columns)
+            for row in rows:
+                flag = marked.get((row["file"], row["turn_id"]), "")
+                writer.writerow([flag, ""] + [row.get(col, "") for col in source_columns])
+        from .triage import write_codebook
+
+        write_codebook(annotate.with_name("codebook.csv"))
+        typer.echo(f"\nwritten to {annotate} - every turn, with 'check' marking {len(marked)}")
+        typer.echo(f"  plus {annotate.with_name('codebook.csv')} explaining every column")
+        typer.echo(
+            "  Filter on check = 'strong' first (both systems dispute the human label), "
+            "then 'yes'.\n  Rows stay in transcript order, so the turns either side are the "
+            "rows either side."
+        )
+    else:
+        with output.open("w", encoding="utf-8", newline="") as handle:
+            writer = _csv.writer(handle)
+            writer.writerow(columns)
+            writer.writerows(as_row(*i) for i in candidates)
+        typer.echo(f"\nwritten to {output}")
+        typer.echo(
+            f"  Each row carries the {context} turn(s) either side, so the transcript does not "
+            "need opening."
+        )
+
     typer.echo(
-        "  The 'verdict' column is blank for your colleague to fill in.\n"
-        "  Contains transcript text - keep it out of version control."
+        "  The 'verdict' column is blank to fill in. Contains transcript text - keep it out of "
+        "version control."
     )
     typer.echo(
         "\nThis finds only label errors the systems happen to catch, so the rate it reveals is a\n"
@@ -1080,8 +1233,22 @@ def label_eval(
         typer.echo(f"FAILED: no transcripts found under {input_dir}", err=True)
         raise typer.Exit(code=1)
 
+    # Written incrementally so a long run survives an interruption, and re-running the same
+    # command resumes rather than starting over.
+    done_files: set[str] = set()
     if output.exists():
-        typer.echo(f"NOTE: {output} exists and will be overwritten by this run.")
+        try:
+            with output.open(encoding="utf-8", newline="") as handle:
+                done_files = {r["file"] for r in _csv_module.DictReader(handle) if r.get("file")}
+        except (OSError, KeyError):
+            done_files = set()
+        if done_files:
+            typer.echo(
+                f"{output} already covers {len(done_files)} file(s); resuming and appending. "
+                "Delete it to start over."
+            )
+        else:
+            typer.echo(f"NOTE: {output} exists and will be overwritten by this run.")
 
     second_opinion = None
     if mapping_path is not None:
@@ -1093,11 +1260,18 @@ def label_eval(
     gold: list[str] = []
     predicted: list[str] = []
     confidence: list[float] = []
-    rows: list[list[str]] = []
     anchors_total = calls_total = unclear_total = no_second_opinion = 0
     started = datetime.now(timezone.utc)
 
+    resuming = bool(done_files)
+    report_handle = output.open("a" if resuming else "w", encoding="utf-8", newline="")
+    report_writer = _csv_module.writer(report_handle)
+    if not resuming:
+        report_writer.writerow(REPORT_COLUMNS)
+
     for path in paths:
+        if path.name in done_files:
+            continue
         try:
             turns = load_transcript(path).turns
         except (ValueError, KeyError, OSError) as exc:
@@ -1137,9 +1311,10 @@ def label_eval(
         gold.extend((t.speaker or "").strip() for t in turns)
         predicted.extend(result.labels)
         confidence.extend(turn_confidence)
+        file_rows: list[list[str]] = []
         for i, (turn, vote) in enumerate(zip(turns, result.votes)):
             truth = (turn.speaker or "").strip()
-            rows.append([
+            file_rows.append([
                 path.name, str(turn.turn_id), truth, vote.winner,
                 f"{turn_confidence[i]:.3f}",
                 second_labels[i] if second_labels else "",
@@ -1150,6 +1325,13 @@ def label_eval(
                 "WRONG" if truth in labels and truth != vote.winner else "",
                 turn.text,
             ])
+        for row in file_rows:
+            if len(row) != len(REPORT_COLUMNS):
+                raise RuntimeError(
+                    f"report row has {len(row)} fields, expected {len(REPORT_COLUMNS)}"
+                )
+        report_writer.writerows(file_rows)
+        report_handle.flush()      # survive an interruption mid-run
         anchors_total += result.anchor_count
         calls_total += result.window_count
         unclear_total += result.unclear_count
@@ -1202,21 +1384,9 @@ def label_eval(
                 f"  {point.budget:>5.0%} {point.reviewed:>8} "
                 f"{point.error_capture:>8.1%} {point.errors_missed:>15}"
             )
-    if rows:
-        import csv as _csv
-
-        with output.open("w", encoding="utf-8", newline="") as handle:
-            writer = _csv.writer(handle)
-            writer.writerow(REPORT_COLUMNS)
-            for row in rows:
-                if len(row) != len(REPORT_COLUMNS):
-                    raise RuntimeError(
-                        f"report row has {len(row)} fields, expected {len(REPORT_COLUMNS)} - "
-                        "refusing to write a misaligned report"
-                    )
-            writer.writerows(rows)
-        typer.echo(f"\nper-turn report: {output}")
-        typer.echo("  Contains transcript text - keep it out of version control.")
+    report_handle.close()
+    typer.echo(f"\nper-turn report: {output}")
+    typer.echo("  Contains transcript text - keep it out of version control.")
 
     per_transcript = elapsed / max(len(paths), 1)
     typer.echo(

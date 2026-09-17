@@ -701,3 +701,95 @@ def test_genuinely_unrecognised_labels_are_still_preserved():
         Turn(turn_id=2, speaker="C/T", text="c"),
     ]
     assert preserved_labels(turns, ("C", "T")) == {0: "CC", 1: "X", 2: "C/T"}
+
+
+def _stub_server(monkeypatch, cli):
+    def fake(*, system, text, output_type):
+        ids = [int(line.split("]")[0][1:]) for line in text.strip().split("\n")]
+        if output_type is Anchors:
+            return Anchors(anchors=[])
+        return WindowLabels(labels=[
+            WindowLabel(turn_id=i, speaker="T" if i % 4 == 0 else "C") for i in ids
+        ])
+
+    class FakeModel:
+        def __init__(self, settings):
+            self.structured = fake
+
+    monkeypatch.setattr(cli, "LocalModel", FakeModel)
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda c: object()))
+
+
+def test_label_eval_resumes_instead_of_starting_over(tmp_path, monkeypatch):
+    """A ten-hour run must survive an interruption."""
+    import csv
+    import json
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    data = tmp_path / "labelled"
+    data.mkdir()
+    for n in range(4):
+        rows = [{"speaker": "T" if i % 4 == 0 else "C", "text": f"words {i}"} for i in range(30)]
+        (data / f"f{n}.json").write_text(json.dumps({"turns": rows}), encoding="utf-8")
+
+    _stub_server(monkeypatch, cli)
+    report = tmp_path / "r.csv"
+
+    # First pass over two files only.
+    first = CliRunner().invoke(cli.app, [
+        "label-eval", str(data), "--limit", "2", "-o", str(report),
+        "--window", "15", "--step", "5",
+    ])
+    assert first.exit_code == 0, first.stdout
+    with report.open(encoding="utf-8", newline="") as h:
+        after_first = {r["file"] for r in csv.DictReader(h)}
+    assert len(after_first) == 2
+
+    # Re-running over everything should append the rest, not redo the first two.
+    second = CliRunner().invoke(cli.app, [
+        "label-eval", str(data), "--limit", "4", "-o", str(report),
+        "--window", "15", "--step", "5",
+    ])
+    assert second.exit_code == 0, second.stdout
+    assert "resuming and appending" in second.stdout
+    with report.open(encoding="utf-8", newline="") as h:
+        rows = list(csv.DictReader(h))
+    assert {r["file"] for r in rows} == {f"f{n}.json" for n in range(4)}
+    # One header only, and no duplicated turns.
+    assert sum(1 for r in rows if r["file"] == "f0.json") == 30
+
+
+def test_report_is_written_as_the_run_proceeds(tmp_path, monkeypatch):
+    """Rows must reach disk per file, not be buffered until the end."""
+    import csv
+    import json
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    data = tmp_path / "labelled"
+    data.mkdir()
+    for n in range(3):
+        rows = [{"speaker": "C", "text": f"words {i}"} for i in range(20)]
+        (data / f"f{n}.json").write_text(json.dumps({"turns": rows}), encoding="utf-8")
+
+    seen_sizes = []
+    _stub_server(monkeypatch, cli)
+    report = tmp_path / "r.csv"
+
+    real_transcript = cli.label_transcript
+
+    def watching(*args, **kwargs):
+        seen_sizes.append(report.stat().st_size if report.exists() else 0)
+        return real_transcript(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "label_transcript", watching)
+    CliRunner().invoke(cli.app, [
+        "label-eval", str(data), "-o", str(report), "--window", "10", "--step", "4",
+    ])
+    # The file grew between transcripts rather than appearing only at the end.
+    assert seen_sizes[-1] > seen_sizes[0]

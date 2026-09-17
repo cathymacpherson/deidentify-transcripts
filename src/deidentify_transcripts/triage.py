@@ -167,3 +167,85 @@ def expected_errors(
             rate = calibration[nearest]
         out.append((conf, counts[conf], counts[conf] * rate))
     return out
+
+
+#: Plain-language description of every column in an annotated audit file, written for the person
+#: checking the labels rather than for a developer. Kept beside the code that writes those columns
+#: so the two cannot drift apart.
+CODEBOOK: list[tuple[str, str, str]] = [
+    (
+        "check",
+        "Whether this turn is worth checking. 'strong' means both automatic systems disagree "
+        "with the human label - the best evidence that the coding may be wrong. 'yes' means only "
+        "the language model disagrees. Blank means nothing flagged it; most turns are blank.",
+        "strong / yes / (blank)",
+    ),
+    (
+        "verdict",
+        "Blank, for you to fill in. Suggested use: 'coder' if the original label was wrong, "
+        "'model' if the automatic label is wrong, 'unclear' if the text cannot settle it.",
+        "(you decide)",
+    ),
+    ("file", "The transcript this turn comes from.", "e.g. 001A_Full.json"),
+    (
+        "turn_id",
+        "Position of the turn in the transcript, counting from 0. Rows are in this order, so the "
+        "turns either side of a row are the rows either side.",
+        "0, 1, 2, ...",
+    ),
+    ("gold", "The speaker label assigned by the human coder.", "C or T"),
+    ("predicted", "The speaker label assigned automatically.", "C, T, or unclear"),
+    (
+        "confidence",
+        "How sure the automatic labeller was, from 0 to 1. Combines whether its own repeated "
+        "readings agreed and whether the second system objected. 1.000 means everything agreed.",
+        "0.000 - 1.000",
+    ),
+    (
+        "second_opinion",
+        "The label chosen by a second, independent system - a simple statistical model that "
+        "counts word patterns rather than reading the conversation. It never changes the label; "
+        "it is only used as a cross-check.",
+        "C or T",
+    ),
+    (
+        "second_conf",
+        "How sure that second system was, from 0 to 1. A confident objection carries more weight "
+        "than a marginal one.",
+        "0.000 - 1.000",
+    ),
+    (
+        "anchor",
+        "If an early pass judged this turn unmistakable, the label it gave. Blank for most turns.",
+        "C, T, or (blank)",
+    ),
+    (
+        "anchor_contradicted",
+        "'yes' where a later pass disagreed with that early judgement - unusual, and worth a look.",
+        "yes / (blank)",
+    ),
+    (
+        "votes",
+        "The label from each separate reading of this turn, separated by |. Each turn is read "
+        "three or four times with different surrounding context. 'T|T|T' means every reading "
+        "agreed; 'T|T|C' means they differed.",
+        "e.g. T|T|T",
+    ),
+    (
+        "error",
+        "'WRONG' wherever the automatic label differs from the human one, at any confidence. "
+        "Wider than 'check', which only marks the confident disagreements.",
+        "WRONG / (blank)",
+    ),
+    ("text", "The words spoken in this turn.", ""),
+]
+
+
+def write_codebook(path) -> None:
+    """Write the column descriptions as a CSV beside the audit files."""
+    import csv
+
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["column", "what it means", "values"])
+        writer.writerows(CODEBOOK)

@@ -391,6 +391,7 @@ def test_audit_lists_confident_disagreements_strongest_first(tmp_path):
         rows = list(csv.DictReader(h))
     assert [r["turn_id"] for r in rows] == ["1", "2"]     # the unsure one is excluded
     assert rows[0]["second_system_agrees"] == "yes"       # strongest evidence first
+    assert "THIS TURN" in rows[0]
     assert rows[0]["human_label"] == "C"
     assert rows[0]["suggested_label"] == "T"
     assert rows[0]["verdict"] == ""
@@ -475,3 +476,258 @@ def test_summary_marks_bands_with_too_few_samples(tmp_path):
         app, ["label-summary", str(labelled), "--calibration", str(cal)]
     )
     assert "few samples" in result.stdout
+
+
+def test_audit_can_annotate_the_whole_report(tmp_path):
+    """One file, every turn in order, with a column marking what to check."""
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        # turn 0: both systems dispute the human. turn 1: only the LLM. turn 2: agrees.
+        w.writerow(["f.json", 0, "C", "T", "1.000", "T", "0.99", "", "", "T|T|T", "WRONG", "aa"])
+        w.writerow(["f.json", 1, "C", "T", "0.990", "C", "0.80", "", "", "T|T|T", "WRONG", "bb"])
+        w.writerow(["f.json", 2, "C", "C", "1.000", "C", "0.95", "", "", "C|C|C", "", "cc"])
+
+    out = tmp_path / "annotated.csv"
+    result = CliRunner().invoke(cli.app, ["label-audit", str(report), "--annotate", str(out)])
+
+    assert result.exit_code == 0, result.stdout
+    with out.open(encoding="utf-8", newline="") as h:
+        rows = list(csv.DictReader(h))
+    assert len(rows) == 3                     # every turn kept, not just the candidates
+    assert [r["turn_id"] for r in rows] == ["0", "1", "2"]   # and in order
+    assert rows[0]["check"] == "strong"
+    assert rows[1]["check"] == "yes"
+    assert rows[2]["check"] == ""
+    assert all(r["verdict"] == "" for r in rows)
+    assert rows[0]["text"] == "aa"            # original columns preserved
+
+
+def test_audit_still_writes_one_combined_file_by_default(tmp_path):
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        w.writerow(["a.json", 1, "C", "T", "1.000", "T", "0.99", "", "", "T|T|T", "WRONG", "x"])
+
+    out = tmp_path / "combined.csv"
+    result = CliRunner().invoke(cli.app, ["label-audit", str(report), "-o", str(out)])
+    assert result.exit_code == 0
+    assert out.exists()
+
+
+def test_audit_rows_carry_the_surrounding_conversation(tmp_path):
+    """One list, self-contained: judging a short turn needs the turns around it."""
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    exchange = [
+        ("T", "And how did that land for you?"),
+        ("C", "I don't know really"),
+        ("C", "yeah"),
+        ("C", "I think I just shut down"),
+        ("T", "Can you say more about that?"),
+    ]
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        for i, (gold, text) in enumerate(exchange):
+            # Turn 2 is the one in dispute.
+            predicted = "T" if i == 2 else gold
+            error = "WRONG" if i == 2 else ""
+            w.writerow([f"f.json", i, gold, predicted, "1.000", predicted, "0.99",
+                        "", "", "T|T|T", error, text])
+
+    out = tmp_path / "audit.csv"
+    result = CliRunner().invoke(cli.app, ["label-audit", str(report), "-o", str(out)])
+
+    assert result.exit_code == 0, result.stdout
+    with out.open(encoding="utf-8", newline="") as h:
+        rows = list(csv.DictReader(h))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["THIS TURN"] == "yeah"
+    assert row["-1"] == "C: I don't know really"
+    assert row["-2"] == "T: And how did that land for you?"
+    assert row["+1"] == "C: I think I just shut down"
+    assert row["+2"] == "T: Can you say more about that?"
+
+
+def test_audit_context_handles_the_start_of_a_transcript(tmp_path):
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        w.writerow(["f.json", 0, "C", "T", "1.000", "T", "0.99", "", "", "T|T|T", "WRONG", "hi"])
+
+    out = tmp_path / "audit.csv"
+    CliRunner().invoke(cli.app, ["label-audit", str(report), "-o", str(out)])
+    with out.open(encoding="utf-8", newline="") as h:
+        row = next(csv.DictReader(h))
+    assert row["-1"] == "" and row["-2"] == ""
+    assert row["THIS TURN"] == "hi"
+
+
+def test_annotate_dir_keeps_every_turn_of_each_session(tmp_path):
+    """Per-session files, each complete - small enough to open, context still intact."""
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        for session in ("S01", "S02"):
+            for i in range(6):
+                disputed = i == 3 and session == "S01"
+                w.writerow([
+                    f"{session}.json", i, "C", "T" if disputed else "C", "1.000",
+                    "T" if disputed else "C", "0.99", "", "", "C|C|C",
+                    "WRONG" if disputed else "", f"{session} turn {i}",
+                ])
+
+    out = tmp_path / "sessions"
+    result = CliRunner().invoke(
+        cli.app, ["label-audit", str(report), "--annotate-dir", str(out)]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert sorted(p.name for p in out.glob("*.review.csv")) == [
+        "S01.review.csv", "S02.review.csv"
+    ]
+    assert (out / "codebook.csv").exists()
+
+    with (out / "S01.review.csv").open(encoding="utf-8", newline="") as h:
+        rows = list(csv.DictReader(h))
+    assert len(rows) == 6                          # every turn, not just the disputed one
+    assert [r["turn_id"] for r in rows] == [str(i) for i in range(6)]
+    assert rows[3]["check"] == "strong"
+    assert all(r["check"] == "" for i, r in enumerate(rows) if i != 3)
+    assert all(r["verdict"] == "" for r in rows)
+
+    # A session with nothing to check still gets a file, so none are silently missing.
+    with (out / "S02.review.csv").open(encoding="utf-8", newline="") as h:
+        assert len(list(csv.DictReader(h))) == 6
+
+
+def test_audit_splits_disagreements_by_vote_unanimity(tmp_path):
+    """The question that matters: was the labeller united against the human, or torn?"""
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        # Three unanimous disagreements, two split ones, one agreement.
+        for i in range(3):
+            w.writerow(["f.json", i, "C", "T", "1.000", "T", "0.99",
+                        "", "", "T|T|T", "WRONG", "x"])
+        for i in range(3, 5):
+            w.writerow(["f.json", i, "C", "T", "0.667", "T", "0.60",
+                        "", "", "T|T|C", "WRONG", "x"])
+        w.writerow(["f.json", 5, "C", "C", "1.000", "C", "0.99", "", "", "C|C|C", "", "x"])
+
+    result = CliRunner().invoke(
+        cli.app, ["label-audit", str(report), "-o", str(tmp_path / "a.csv")]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "all 5 turn(s) where the labeller differs" in result.stdout
+    assert "3 ( 60%) the labeller's views were unanimous" in result.stdout
+    assert "2 ( 40%) its views were split" in result.stdout
+
+
+def test_audit_reports_unanimous_disagreements_it_held_back(tmp_path):
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        # Unanimous views, but confidence pushed down by a strong second-opinion objection.
+        w.writerow(["f.json", 0, "C", "T", "0.700", "C", "0.85",
+                    "", "", "T|T|T", "WRONG", "x"])
+
+    result = CliRunner().invoke(
+        cli.app, ["label-audit", str(report), "-o", str(tmp_path / "a.csv")]
+    )
+    assert "fall below --min-confidence" in result.stdout
+
+
+def test_codebook_covers_every_column_actually_written(tmp_path):
+    """A codebook that misses a column, or describes one that is not there, is worse than none."""
+    import csv
+
+    from typer.testing import CliRunner
+
+    from deidentify_transcripts import cli
+
+    report = tmp_path / "r.csv"
+    with report.open("w", newline="", encoding="utf-8") as h:
+        w = csv.writer(h)
+        w.writerow(cli.REPORT_COLUMNS)
+        w.writerow(["f.json", 0, "C", "T", "1.000", "T", "0.99", "", "", "T|T|T", "WRONG", "x"])
+
+    out = tmp_path / "sessions"
+    result = CliRunner().invoke(
+        cli.app, ["label-audit", str(report), "--annotate-dir", str(out)]
+    )
+    assert result.exit_code == 0, result.stdout
+
+    codebook = out / "codebook.csv"
+    assert codebook.exists()
+    with codebook.open(encoding="utf-8", newline="") as h:
+        described = {r["column"] for r in csv.DictReader(h)}
+    with (out / "f.review.csv").open(encoding="utf-8", newline="") as h:
+        written = set(next(csv.reader(h)))
+
+    assert written - described == set(), f"undocumented columns: {written - described}"
+    assert described - written == set(), f"documented but absent: {described - written}"
+
+
+def test_codebook_explains_the_check_column_in_plain_terms(tmp_path):
+    import csv
+
+    from deidentify_transcripts.triage import write_codebook
+
+    path = tmp_path / "cb.csv"
+    write_codebook(path)
+    with path.open(encoding="utf-8", newline="") as h:
+        rows = {r["column"]: r for r in csv.DictReader(h)}
+    assert "strong" in rows["check"]["what it means"]
+    assert "fill in" in rows["verdict"]["what it means"]
+    assert rows["gold"]["values"] == "C or T"

@@ -34,120 +34,27 @@ turns carry no usable gold label, which is ~0.3%):
 | Error capture at 5% / 30% / 50% flagged | 10.0% / 52.6% / 77.0% |
 | Role assignment | No flip detected by either |
 
-**LLM passes** (20 labelled transcripts, 13,896 turns, window 40, with second opinion):
+**LLM passes** — measured over the **whole labelled corpus**: 119 transcripts, 83,298 turns,
+window 40, with the second opinion, scored on clinician-disjoint folds.
 
 | Property | Value |
 |---|---|
-| Accuracy | 0.912 |
+| Accuracy | 0.909 |
 | Macro-F1 | **0.905** (vs 0.724 deterministic) |
-| Boundary F1 | **0.826** (vs 0.440 deterministic) |
-| Error rate | 8.8% (1,223 wrong turns in 759 blocks) |
-| Errors at maximum confidence | **32.8%** — the hard ceiling on capture |
-| Error capture at 4% / 14% / 25% flagged | 24% / **49%** / 65% (weighted confidence) |
-| Anchored turns | 35.5%, 4.2% error — vs 11.4% for unanchored |
-| Per-file error rate | 1.9% – 16.8% (8.9× spread); worst half carry 68% of error |
-| Per-file triage | rho +0.66 but only 1.3× lift — too weak to act on |
-| Runtime | ~300s per transcript; ~10 hours for the corpus |
+| Per role | C-F1 0.928, T-F1 0.883 |
+| Boundary F1 | **0.812** (vs 0.440 deterministic) |
+| Error rate | **9.0%** (7,530 wrong turns in 4,722 blocks) |
+| Anchored turns | 32,343 (39%) |
+| Error capture at 10% / 30% / 50% flagged | 40.1% / 66.3% / 74.7% |
+| Runtime | 11.4 hours; ~344s per transcript |
 
-Estimates fell as more transcripts were added — 5.5% error on one file, 6.6% on five, 9.8% on ten,
-8.8% on twenty. Treat any figure from a handful of transcripts as optimistic.
+Most errors are isolated turns rather than mislabelled runs — 7,530 errors across 4,722 blocks, a
+mean block length under two.
 
-**Provisional, from a single transcript** — these have *not* been re-measured across the labelled
-set and the class balance above shows how far one transcript can mislead (it suggested ~80/20
-against the true ~62/38). Treat them as indicative only:
-
-| Property | Value (n=1) |
-|---|---|
-| De-identification state | Already de-identified (bracketed placeholder tokens present) |
-| Speaker-change rate | ~29% of line boundaries |
-| Run length | C: mean ~5.6 lines. T: mean ~1.4 |
-| Words per line | C: mean ~10. T: mean ~7 |
-| Lines ending in `?` | T: ~44%. C: ~2% |
-| First-person tokens per line | T: ~0.15. C: ~1.2 |
-
-Four consequences:
-
-**Turns are ASR fragments, not conversational turns.** A single sentence is routinely split across
-several rows, so many lines are a bare acknowledgement or a trailing clause of two or three words.
-Lines like these carry no role signal whatsoever and are recoverable only from surrounding context.
-Per-line independent classification is not viable.
-
-**The sequential prior is strong, but hard to exploit.** Speakers hold the floor for several turns,
-so this is a sequence-labelling problem and any approach ignoring run structure discards most of
-the signal. The rule baseline's boundary F1 of 0.430 shows that capturing it is the *hard* part:
-role assignment is comfortable (no flip, C-F1 0.787) while finding the changeovers is where the
-baseline fails.
-
-**Timestamps are useless for this task.** The median inter-line gap is zero at speaker changes
-*and* at non-changes; almost no change shows a measurable pause. The timestamps are
-segmentation artifacts, not voice-activity boundaries. Do not build on them.
-
-**Accuracy is a misleading metric.** Labelling every turn `C` scores ~62% while knowing nothing;
-the rule baseline reaches 71.3% accuracy but only 0.673 macro-F1. Headline accuracy must never be
-reported alone — see [Metrics](../docs/SPEAKER_LABELLING.md#metrics).
-
-**The bar for any model-based approach is macro-F1 0.714**, set by the trained sequence labeller.
-
-**The deterministic path has plateaued.** A trained model over ~83,000 labelled turns gained only
-+0.041 macro-F1 over a four-feature hand-tuned rule. That is a small return from a large training
-set, and it indicates the surface features are close to exhausted rather than that the model is
-badly built.
-
-**The trained model's boundary F1 is worse than the rule baseline's**, despite learning transition
-probabilities specifically to improve it. This is Viterbi over-smoothing: where most boundaries are
-"no change", maximising path likelihood suppresses switches, which lifts token accuracy and costs
-changeover recall. Short therapist runs are the first casualty, which matches T-F1 being the weak
-side throughout. Marginal decoding — labelling each turn by its own posterior rather than committing to one best
-sequence — confirmed this: it recovers boundary F1 from 0.383 to 0.440 and improves macro-F1 to
-0.724. It is now the default. The recovery is real but small, so over-smoothing was a contributing
-cause and not the main one.
-
-**The confidence signal is weak, and this is what rules the deterministic path out.** Flagging 5%
-of turns catches 10% of the model's errors — twice random, and no more. Flagging half the corpus
-(41,524 turns) still leaves 4,585 errors unflagged, against a target of roughly 830. The rule
-baseline's hand-made score performs almost identically (8.6% and 76.3%), so this is not a defect
-in either mechanism: with a ~24% error rate the posteriors sit near 0.5 across a large share of
-turns, because the model is genuinely uncertain nearly everywhere rather than confidently right in
-some places and confidently wrong in others.
-
-**Errors are scattered, not clustered.** 19,949 wrong turns fall in 10,943 separate blocks — mean
-block length under two. That is roughly 11,000 individual corrections rather than a few hundred
-run-level fixes, which is the expensive failure mode for a reviewer.
-
-**Conclusion: the deterministic path cannot reach the target.** Reaching ~830 unflagged errors from
-a 24% base error rate would require capturing ~96% of errors; the measured curve reaches 77% at a
-50% review budget, and extrapolates to needing well over 80% of turns reviewed — at which point the
-system is not helping. What is needed is a lower base error rate, not a better-calibrated
-confidence signal over the same errors.
-
-**Fold 0 is 97% one clinician.** Its 0.606 is a score about that clinician, not about the corpus,
-and it means the model handles them poorly when trained without them. The 0.153 spread across folds
-is exactly why per-fold reporting is required here.
-
-## Labelling goal and constraints
-
-**A human reviews every transcript regardless.** The objective is therefore not autonomous accuracy
-but minimising reviewer effort: the target is expressed as *errors left unflagged*, not as an
-accuracy figure. See [Metrics](../docs/SPEAKER_LABELLING.md#metrics).
-
-**Target: 99%** — understood as 99% of turns correct among those the system commits to, with the
-uncertain residue flagged for the reviewer. On ~83,000 turns that allows roughly 830 unflagged
-errors.
-
-**This target was not reached, and is not reachable from text alone.** Measured across 20
-transcripts: 8.8% of turns are wrong, and 32.8% of those errors sit at maximum confidence, so
-capture cannot exceed ~67% at any review budget. Scaled to the corpus that leaves roughly 2,400
-unflagged errors — about three times the target.
-
-The limit is not the confidence mechanism. The remaining errors are turns where the LLM is
-consistently wrong *and* an independently-built trained model agrees with it. Two systems that fail
-differently, both confident, both wrong, is what an information ceiling looks like rather than a
-tuning problem — see the recordings constraint below.
-
-**What was achieved instead:** ~91% accurate labels with about two-thirds of errors flagged at a
-28% review budget, in per-transcript reports that show each flagged turn in context. Against
-labelling ~83,000 turns from scratch, the reviewer instead works through roughly 4,500 error blocks,
-most of them signposted.
+**The small-sample estimate held.** Twenty transcripts gave accuracy 0.912, macro-F1 0.905 and an
+8.8% error rate; the full corpus gave 0.909, 0.905 and 9.0%. Worth recording because the estimates
+*before* that were not stable — 5.5% error on one transcript, 6.6% on five, 9.8% on ten. One or two
+transcripts told us very little; twenty told us essentially what 119 did.
 
 ### Weighting disagreement by its strength
 
@@ -253,6 +160,44 @@ human anchors.
   threshold reaches them. The review lists are a priority order, not a filter.
 - Turns labelled by hand are unchanged and marked `speaker_source: "manual"`.
 - Speaker values the tool does not recognise were kept verbatim and listed first for review.
+
+## Auditing the human labels
+
+Some turns the labeller got "wrong" turned out to be turns the *human coder* mislabelled. Since no
+second coder is available, `label-audit` substitutes for double coding: it lists turns where the
+labeller is confident and contradicts the human, strongest evidence first.
+
+Run over all 119 labelled transcripts:
+
+| | |
+|---|---|
+| Confident disagreements | 2,812 of 83,049 labelled turns (**3.4%**) |
+| Also backed by the second opinion | 2,570 (**91%**) |
+| Median per session | ~24 |
+| Range | 2 to 101 per session |
+
+**The 91% is higher than the small sample suggested.** Where the LLM is confident enough to appear
+on this list, the independently-built statistical model almost always agrees with it against the
+human. Two systems that fail in different ways converging on the same contradiction is a stronger
+signal than either alone, and it means the list can be worked almost entirely from
+`check = "strong"`.
+
+### One session is an outlier
+
+The busiest session carries 101 candidates in 745 turns — 13.6%, against a corpus median nearer 3%.
+It is also the transcript that produced 30 `unclear` turns where every other managed 0–5. Two
+independent signals pointing at the same file suggests something structural: a different coder, a
+different recording setup, or more than two speakers. Worth diagnosing before treating its 101 flags
+as 101 separate problems.
+
+At the other end, several sessions have two or three candidates across hundreds of turns and are
+probably clean.
+
+### This is a floor, not a measurement
+
+The method only finds label errors the systems happen to catch. If a proportion of these turn out
+to be genuine coder errors, that establishes human error exists at *some rate above* that — it does
+not measure the rate. State it that way in any write-up; it is easy to misread as an estimate.
 
 ## Label conventions in this corpus
 
